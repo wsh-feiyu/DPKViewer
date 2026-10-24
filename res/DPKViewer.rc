@@ -1,0 +1,62 @@
+// DPKViewer.rc - main menu, application icon and version info.
+// All controls are created in code (see MainFrame.cpp); this script only holds
+// resources. Keep the lines before the code_page pragma ASCII-only.
+#pragma code_page(65001)
+
+#include "afxres.h"
+#include "resource.h"
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+IDR_MAINFRAME ICON "DPKViewer.ico"
+
+IDR_MAINFRAME MENU
+BEGIN
+    POPUP "文件(&F)"
+    BEGIN
+        MENUITEM "打开包(&O)...", ID_APP_OPEN
+        MENUITEM SEPARATOR
+        MENUITEM "解包到目录(&E)...", ID_APP_EXTRACT
+        MENUITEM "生成 DPK 包(&P)...", ID_APP_PACK
+        MENUITEM SEPARATOR
+        MENUITEM "退出(&X)", ID_APP_EXIT
+    END
+    POPUP "帮助(&H)"
+    BEGIN
+        MENUITEM "使用说明(&U)...", ID_APP_USAGE
+        MENUITEM "关于 DPKViewer(&A)...", ID_APP_ABOUT
+    END
+END
+
+STRINGTABLE
+BEGIN
+    IDR_MAINFRAME "DPKViewer"
+END
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "DPKViewer - 寻仙 DPK 包浏览 / 解包 / 生成工具"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "DPKViewer"
+            VALUE "LegalCopyright", "仅供学习与自用"
+            VALUE "OriginalFilename", "DPKViewer.exe"
+            VALUE "ProductName", "DPKViewer"
+            VALUE "ProductVersion", "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

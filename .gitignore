@@ -1,0 +1,32 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# 编译产物
+build/
+obj/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.tlog
+*.recipe
+*.lastbuildstate
+
+# 测试工作目录
+tests/work/
+tests/tools/__pycache__/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
