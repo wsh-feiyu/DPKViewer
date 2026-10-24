@@ -1,0 +1,82 @@
+name: Build & Release
+
+on:
+  # 打 tag（如 v1.0.0）时自动创建 Release 并上传 exe
+  push:
+    tags:
+      - 'v*'
+  # 也可以手动点 Actions 页面触发（两种模式都能用）
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x86
+            vs_platform: x86
+          - platform: x64
+            vs_platform: x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 官方 setup-msbuild 自带 VS 2022 Build Tools
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ${{ matrix.platform }} Release
+        shell: pwsh
+        run: |
+          msbuild DPKViewer.sln `
+            /t:Build `
+            /p:Configuration=Release `
+            /p:Platform=${{ matrix.vs_platform }} `
+            /p:DeployOnBuild=false `
+            /nologo /v:minimal
+
+      # 产物路径按工程 OutDir：build\$(Platform)\Release\DPKViewer.exe
+      - name: Collect artifact
+        shell: pwsh
+        run: |
+          $src = "build\${{ matrix.platform }}\Release\DPKViewer.exe"
+          if (-not (Test-Path $src)) { throw "未找到 $src" }
+          $dst = "DPKViewer-${{ matrix.platform }}.exe"
+          Copy-Item $src $dst -Force
+          Get-Item $dst | Select-Object Name, Length
+
+      - name: Upload ${{ matrix.platform }} exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: DPKViewer-${{ matrix.platform }}
+          path: DPKViewer-${{ matrix.platform }}.exe
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    # 只有打 tag 才创建 GitHub Release；手动触发就只产 artifact 不发版
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        shell: bash
+        run: ls -lh artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DPKViewer ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*
