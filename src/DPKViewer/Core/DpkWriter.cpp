@@ -233,10 +233,15 @@ bool WalkChainFile(FILE* fp, uint64_t fsize, uint32_t root, std::vector<uint32_t
 
 }  // namespace
 
-bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err) {
+bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err,
+                    const ProgressCallback& progress) {
     layout = PackLayout();
     layout.templatePath = templateDpkPath;
 
+    if (progress && !progress(L"打开包", 0)) {
+        err = "操作已取消";
+        return false;
+    }
     Reader reader;
     if (!reader.Open(templateDpkPath, err)) {
         err = "打开模板包失败: " + err;
@@ -270,6 +275,15 @@ bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std
 
     const std::vector<Entry>& entries = reader.Entries();
     for (size_t i = 0; i < entries.size(); ++i) {
+        // 大包逐块扫描是主要耗时：每 64 条报告一次进度并泵消息，Esc 可取消
+        if (progress && (i & 63) == 0) {
+            const int pct = entries.empty() ? 100 : (int)(i * 100 / entries.size());
+            if (!progress(Utf8ToWide("扫描块布局: " + entries[i].pathUtf8), pct)) {
+                fclose(fp);
+                err = "操作已取消";
+                return false;
+            }
+        }
         std::string key = entries[i].pathUtf8;
         std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)tolower(c); });
         layout.entryOrder.push_back(key);  // LoadEntries 顺序即原包目录树顺序
@@ -695,7 +709,15 @@ bool PatchEntryInPackage(const std::wstring& pkgPath, const std::string& pathUtf
         return false;
     }
     PackLayout layout;
-    if (!LoadPackLayout(pkgPath, layout, err)) return false;
+    // 布局扫描是主要耗时阶段，映射到总进度 5%..55%（progress 空时直通不回调）
+    const bool hasProgress = (bool)progress;
+    if (!LoadPackLayout(pkgPath, layout, err,
+                        hasProgress ? ProgressCallback([progress](const std::wstring& m, int p) {
+                            return progress(m, 5 + p / 2);
+                        })
+                                    : ProgressCallback())) {
+        return false;
+    }
     // 拷贝条目表后立刻关闭只读句柄：fopen_s 打开的文件不可共享写入，写阶段要用 r+b 重开
     const std::vector<Entry> entries = reader.Entries();
     reader.Close();

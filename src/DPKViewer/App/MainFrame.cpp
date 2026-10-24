@@ -949,7 +949,8 @@ void CMainFrame::OnPackFolder() {
         }
         // 同时沿用原包块布局：按原包块号回填，保证总块数与结构一致
         auto layout = std::make_shared<dpk::PackLayout>();
-        if (!dpk::LoadPackLayout(m_reader.Path(), *layout, terr)) {
+        if (!dpk::LoadPackLayout(m_reader.Path(), *layout, terr,
+                                 [this](const std::wstring& m, int p) -> bool { return ProgressTick(m, p / 7); })) {
             MessageBox(W("读取模板布局失败: " + terr), L"DPKViewer", MB_ICONWARNING);
             return;
         }

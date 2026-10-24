@@ -69,8 +69,10 @@ bool PackEmpty(const std::wstring& outPath, const PackOptions& opt, PackResult& 
 // 读取模板包头（1024 字节）
 bool LoadTemplateHeader(const std::wstring& templateDpkPath, std::vector<uint8_t>& header, std::string& err);
 
-// 读取模板布局（各条目原块位置 + tree/names 链 + 总块数），用于按原包结构回填
-bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err);
+// 读取模板布局（各条目原块位置 + tree/names 链 + 总块数），用于按原包结构回填。
+// 大包逐块扫描较慢，progress 会按 0..100 报告扫描进度（返回 false 取消）。
+bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err,
+                    const ProgressCallback& progress = ProgressCallback());
 
 // 原位补丁：把 data 写入包内 pathUtf8（同名替换 / 不存在则新增），其余条目字节不动。
 // 大包友好：不缓存整包内容、不解码无关条目，内存占用 ≈ 导入文件大小 + 目录树。
