@@ -589,9 +589,9 @@ void CMainFrame::OnPackFolder() {
 
     CString summary;
     if (ok) {
-        summary.Format(L"生成%s：写入 %u 条，跳过 %u 条。\r\n明文总量 %s，包大小 %s，总块数 %u。\r\n"
+        summary.Format(L"生成%s：写入 %u 条（其中复用原包 %u 条），跳过 %u 条。\r\n明文总量 %s，包大小 %s，总块数 %u。\r\n"
                        L"压缩=%s，加密=%s，模板包头=%s\r\n输出: %s",
-                       m_cancel ? L"已取消" : L"完成", result.entryCount, result.skippedCount,
+                       m_cancel ? L"已取消" : L"完成", result.entryCount, result.reusedCount, result.skippedCount,
                        (LPCTSTR)BytesText(result.plainBytes), (LPCTSTR)BytesText(result.packageSize),
                        result.totalBlocks, opt.compress ? L"是" : L"否", opt.encrypt ? L"是" : L"否",
                        opt.templateHeader.empty() ? L"无" : L"有", (LPCTSTR)CString(outPkg.c_str()));

@@ -189,8 +189,8 @@ int CliPack(const std::vector<std::wstring>& args, Reporter& out) {
     }
     char line[512];
     _snprintf_s(line, sizeof(line), _TRUNCATE,
-                "OK 生成完成: 条目 %u，跳过 %u，明文 %llu 字节，包大小 %llu 字节，总块数 %u（压缩=%s 加密=%s 模板包头=%s）",
-                result.entryCount, result.skippedCount, (unsigned long long)result.plainBytes,
+                "OK 生成完成: 条目 %u（复用原包 %u 条），跳过 %u，明文 %llu 字节，包大小 %llu 字节，总块数 %u（压缩=%s 加密=%s 模板包头=%s）",
+                result.entryCount, result.reusedCount, result.skippedCount, (unsigned long long)result.plainBytes,
                 (unsigned long long)result.packageSize, result.totalBlocks, opt.compress ? "是" : "否",
                 opt.encrypt ? "是" : "否", opt.templateHeader.empty() ? "无" : "有");
     out.Line(std::string(line));

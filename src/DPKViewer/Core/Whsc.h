@@ -32,8 +32,10 @@ bool WhscDecode(const std::vector<uint8_t>& stream, std::vector<uint8_t>& plain,
 // 明文 -> whsc 流
 //   flags: 0x01 压缩，0x02 加密，0x04 使用 ContentPassword（否则 PackagePassword）
 //   level: 压缩级别，<=0 时使用 stored 块（不压缩数据只加 zlib 包装）
+//   adaptive: 压缩仅在结果更小时使用——压缩后不小于原文就按原样存储并清掉 0x01 位，
+//             与游戏原始打包器的逐条目策略一致（小文件/已压缩数据不压）
 bool WhscEncode(const std::vector<uint8_t>& plain, uint8_t flags, std::vector<uint8_t>& stream, std::string& err,
-                int level = 9);
+                int level = 9, bool adaptive = false);
 
 // 虚拟文件所需块数（与参考实现 blocks_for 一致）
 uint32_t BlocksFor(uint64_t size);

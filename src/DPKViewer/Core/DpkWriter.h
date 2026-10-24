@@ -21,6 +21,7 @@ struct PackLayoutEntry {
 // 模板布局：按原包块号回填，保证总块数/块号与模板一致
 struct PackLayout {
     std::map<std::string, PackLayoutEntry> byPath;  // 小写 UTF-8 路径 -> 原块位置
+    std::vector<std::string> entryOrder;            // 原包目录树中的条目顺序（小写 UTF-8 路径）
     uint32_t totalBlocks = 0;                       // 模板总块数
     uint32_t treeRoot = 1;
     uint32_t namesRoot = 2;
@@ -42,6 +43,7 @@ struct PackOptions {
 struct PackResult {
     uint32_t entryCount = 0;    // 写入条目的数量
     uint32_t skippedCount = 0;  // 因路径非法被跳过的数量
+    uint32_t reusedCount = 0;   // 模板模式下内容未变、原样复用原包字节的条目数
     uint64_t plainBytes = 0;    // 明文总量
     uint64_t packageSize = 0;   // 生成的包大小（字节）
     uint32_t totalBlocks = 0;   // 总块数

@@ -41,6 +41,65 @@ struct PreparedForBuild {
     uint32_t rootBlock = 0;
 };
 
+// 从内存模板包按块号链读出虚拟文件原始字节（whsc 流）
+bool ReadTplChainStream(const std::vector<uint8_t>& tpl, const std::vector<uint32_t>& chain,
+                        std::vector<uint8_t>& stream, std::string& err) {
+    stream.clear();
+    if (chain.empty()) {
+        err = "空块链";
+        return false;
+    }
+    const size_t blockCount = tpl.size() / kBlockSize;
+    if (chain[0] >= blockCount) {
+        err = "根块越界";
+        return false;
+    }
+    const uint8_t* root = &tpl[(size_t)chain[0] * kBlockSize];
+    const uint32_t fileSize = (uint32_t)root[12] | ((uint32_t)root[13] << 8) | ((uint32_t)root[14] << 16) |
+                              ((uint32_t)root[15] << 24);
+    if ((uint64_t)fileSize > (kBlockSize - 32) + (uint64_t)(chain.size() - 1) * (kBlockSize - 8)) {
+        err = "虚拟文件长度超出块链容量";
+        return false;
+    }
+    stream.reserve(fileSize);
+    const size_t take = fileSize < (kBlockSize - 32) ? fileSize : (kBlockSize - 32);
+    stream.insert(stream.end(), root + 32, root + 32 + take);
+    for (size_t i = 1; i < chain.size() && stream.size() < fileSize; ++i) {
+        if (chain[i] >= blockCount) {
+            err = "块号越界";
+            stream.clear();
+            return false;
+        }
+        const uint8_t* blk = &tpl[(size_t)chain[i] * kBlockSize];
+        const size_t rem = fileSize - stream.size();
+        const size_t t2 = rem < (kBlockSize - 8) ? rem : (kBlockSize - 8);
+        stream.insert(stream.end(), blk + 8, blk + 8 + t2);
+    }
+    if (stream.size() != fileSize) {
+        err = "数据不足";
+        stream.clear();
+        return false;
+    }
+    return true;
+}
+
+// 模板复用：解码原包流得到明文，与新内容一致时直接复用原包字节
+// （保留原包的 flags 与压缩输出，避免重新编码导致存储参数/大小漂移）
+bool ReuseTemplateStream(const std::vector<uint8_t>& tpl, const std::vector<uint32_t>& chain,
+                         const std::vector<uint8_t>& plain, std::vector<uint8_t>& streamOut) {
+    std::vector<uint8_t> orig;
+    std::string e1;
+    if (!ReadTplChainStream(tpl, chain, orig, e1)) return false;
+    std::vector<uint8_t> origPlain;
+    WhscInfo info;
+    std::string e2;
+    if (!WhscDecode(orig, origPlain, info, e2)) return false;  // 模板条目损坏：走重新编码
+    if (origPlain.size() != plain.size()) return false;
+    if (!plain.empty() && memcmp(&plain[0], &origPlain[0], plain.size()) != 0) return false;
+    streamOut.swap(orig);
+    return true;
+}
+
 // 按给定块号序列写入一条虚拟文件（块链）到 blocksMap
 void FillBlockChain(std::map<uint32_t, std::vector<uint8_t>>& blocksMap,
                     const std::vector<uint8_t>& stream,
@@ -157,13 +216,6 @@ bool WalkChain(const std::vector<uint8_t>& pkg, uint32_t root, std::vector<uint3
     return !out.empty();
 }
 
-// 生成"空块"：占位但不属于任何有效数据链
-std::vector<uint8_t> MakeEmptyBlock(uint32_t bn) {
-    std::vector<uint8_t> block(kBlockSize, 0);
-    WriteU32(&block[8], bn);  // tail 指向自身，fileSize = 0
-    return block;
-}
-
 }  // namespace
 
 bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err) {
@@ -201,6 +253,7 @@ bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std
     for (size_t i = 0; i < entries.size(); ++i) {
         std::string key = entries[i].pathUtf8;
         std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)tolower(c); });
+        layout.entryOrder.push_back(key);  // LoadEntries 顺序即原包目录树顺序
         PackLayoutEntry le;
         le.rootBlock = entries[i].rootBlock;
         le.blocks = entries[i].blockCount;
@@ -246,6 +299,23 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
     result = PackResult();
     const uint8_t flags = (uint8_t)((opt.compress ? 0x01 : 0x00) | (opt.encrypt ? 0x02 : 0x00));
 
+    // 模板包与其整体布局提前加载：编码阶段就要尝试逐条目复用原包字节
+    const PackLayout* layout = (opt.layout && opt.layout->totalBlocks > 0) ? opt.layout.get() : nullptr;
+    std::vector<uint8_t> tplBytes;
+    if (layout && !ReadFileBytes(layout->templatePath, tplBytes, err)) {
+        err = "读取模板包失败: " + err;
+        return false;
+    }
+    // 条目路径（小写）-> 原包块链，复用判定用
+    auto findTplChain = [&](const std::wstring& relPath) -> const std::vector<uint32_t>* {
+        if (!layout) return nullptr;
+        std::string key = WideToUtf8(relPath);
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)tolower(c); });
+        auto it = layout->byPath.find(key);
+        if (it == layout->byPath.end() || it->second.chain.empty()) return nullptr;
+        return &it->second.chain;
+    };
+
     // ---------- 阶段 1：规范化 + 去重（保持输入顺序，不排序）----------
     std::vector<PackFile> items;
     std::vector<std::wstring> seen;
@@ -266,6 +336,24 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
         items.push_back(item);
     }
 
+    // 模板模式：按原包目录树顺序排列条目——目录树/路径表明文与原包一致时可整体复用
+    if (layout) {
+        std::map<std::string, size_t> orderOf;
+        for (size_t i = 0; i < layout->entryOrder.size(); ++i) orderOf[layout->entryOrder[i]] = i;
+        auto tplRank = [&](const PackFile& f) -> size_t {
+            std::string key = WideToUtf8(f.relPath);
+            std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)tolower(c); });
+            auto it = orderOf.find(key);
+            return it != orderOf.end() ? it->second : (size_t)-1;
+        };
+        std::stable_sort(items.begin(), items.end(), [&](const PackFile& a, const PackFile& b) {
+            const size_t ra = tplRank(a);
+            const size_t rb = tplRank(b);
+            if (ra != rb) return ra < rb;  // 模板条目按原包顺序在前，新增条目保持原序在后
+            return false;
+        });
+    }
+
     // ---------- 阶段 2：编码各文件内容 ----------
     std::vector<Prepared> prepared;
     prepared.reserve(items.size());
@@ -280,7 +368,10 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
         Prepared p;
         p.relPath = items[i].relPath;
         std::string eerr;
-        if (!WhscEncode(items[i].data, flags, p.stream, eerr, opt.level)) {
+        const std::vector<uint32_t>* tplChain = findTplChain(items[i].relPath);
+        if (tplChain && ReuseTemplateStream(tplBytes, *tplChain, items[i].data, p.stream)) {
+            ++result.reusedCount;  // 内容未变：原样复用原包字节（保留原 flags 与压缩输出）
+        } else if (!WhscEncode(items[i].data, flags, p.stream, eerr, opt.level, opt.compress)) {
             err = "编码失败 " + WideToUtf8(items[i].relPath) + ": " + eerr;
             return false;
         }
@@ -304,12 +395,14 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
 
     std::vector<uint8_t> treeStream, namesStream;
     std::string eerr;
-    if (!WhscEncode(treeRaw, flags, treeStream, eerr, opt.level)) {
+    if (!WhscEncode(treeRaw, flags, treeStream, eerr, opt.level, opt.compress)) {
         err = "目录树编码失败: " + eerr;
         return false;
     }
-    // names 内容只含路径字符串，与 rootBlock 无关，只需编码一次
-    if (!WhscEncode(namesBlob, flags, namesStream, eerr, opt.level)) {
+    // names 内容只含路径字符串，与 rootBlock 无关，只需编码一次；模板一致时直接复用
+    if (layout && ReuseTemplateStream(tplBytes, layout->namesBlocks, namesBlob, namesStream)) {
+        // 原样复用原包路径名表
+    } else if (!WhscEncode(namesBlob, flags, namesStream, eerr, opt.level, opt.compress)) {
         err = "路径名表编码失败: " + eerr;
         return false;
     }
@@ -317,26 +410,17 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
     // ---------- 阶段 4：块布局 ----------
     // layout 模式：严格沿用原包块号回填，保证总块数与结构一致
     // 普通模式：treeRoot=1、namesRoot=2，文件块从 3 起连续排，续块放在文件之后
-    const PackLayout* layout = (opt.layout && opt.layout->totalBlocks > 0) ? opt.layout.get() : nullptr;
-    std::vector<uint8_t> tplBytes;
-    if (layout && !ReadFileBytes(layout->templatePath, tplBytes, err)) {
-        err = "读取模板包失败: " + err;
-        return false;
-    }
-
     const uint32_t treeRoot = layout ? layout->treeRoot : 1;
     const uint32_t namesRoot = layout ? layout->namesRoot : 2;
     uint32_t treeBlocks = BlocksFor(treeStream.size());
     uint32_t namesBlocks = BlocksFor(namesStream.size());
 
     std::vector<uint32_t> treeBN, namesBN;  // 完整链（含根块）
-    std::vector<uint32_t> staleBlocks;      // 链缩短后残留的块，需置空
     uint32_t totalBlocks = 0;
 
     for (int iter = 0; iter < 6; ++iter) {
         treeBN.clear();
         namesBN.clear();
-        staleBlocks.clear();
 
         // 追加块号分配：优先复用原包空闲块，用尽后再向文件末尾扩展
         uint32_t appendCursor = layout ? layout->totalBlocks : 3;
@@ -351,8 +435,7 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
             while (treeBN.size() < treeBlocks) treeBN.push_back(allocBlock());
             namesBN = layout->namesBlocks;
             while (namesBN.size() < namesBlocks) namesBN.push_back(allocBlock());
-            for (size_t i = treeBlocks; i < layout->treeBlocks.size(); ++i) staleBlocks.push_back(layout->treeBlocks[i]);
-            for (size_t i = namesBlocks; i < layout->namesBlocks.size(); ++i) staleBlocks.push_back(layout->namesBlocks[i]);
+            // 链缩短时多出的原块不置空：保留模板原字节（已不可达，与原包残留一致）
         }
 
         // 分配文件条目块号
@@ -366,13 +449,11 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
                 if (it != layout->byPath.end() && !it->second.chain.empty() &&
                     prepared[i].blocks <= it->second.chain.size()) {
                     // 沿用原包真实块号序列（可能不连续）
+                    // 原链多出的块不再置空：保留模板原字节（不可达，与原包残留一致）
                     prepared[i].blockNumbers.assign(it->second.chain.begin(),
                                                     it->second.chain.begin() + prepared[i].blocks);
                     prepared[i].rootBlock = prepared[i].blockNumbers[0];
                     placed = true;
-                    // 原链多出的块置空，避免悬垂
-                    for (size_t k = prepared[i].blocks; k < it->second.chain.size(); ++k)
-                        staleBlocks.push_back(it->second.chain[k]);
                 }
             }
             if (!placed) {
@@ -407,7 +488,11 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
         }
         std::vector<uint8_t> treeRawReal, ignoredNames;
         BuildTreeAndNames(real, treeRawReal, ignoredNames);
-        if (!WhscEncode(treeRawReal, flags, treeStream, eerr, opt.level)) {
+        // 与模板目录树内容一致时复用原包流（字节级），否则重编码
+        std::vector<uint8_t> reusedTree;
+        if (layout && ReuseTemplateStream(tplBytes, layout->treeBlocks, treeRawReal, reusedTree)) {
+            treeStream.swap(reusedTree);
+        } else if (!WhscEncode(treeRawReal, flags, treeStream, eerr, opt.level, opt.compress)) {
             err = "目录树编码失败: " + eerr;
             return false;
         }
@@ -450,11 +535,6 @@ bool PackFiles(const std::vector<PackFile>& files, const std::wstring& outPath, 
 
     for (size_t i = 0; i < prepared.size(); ++i) {
         FillBlockChain(blocksMap, prepared[i].stream, prepared[i].blockNumbers);
-    }
-
-    // 链缩短后残留的原块：写成空块，避免悬垂指针
-    for (size_t i = 0; i < staleBlocks.size(); ++i) {
-        blocksMap[staleBlocks[i]] = MakeEmptyBlock(staleBlocks[i]);
     }
 
     // ---------- 阶段 7：按块号升序拼接 ----------

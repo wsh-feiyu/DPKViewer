@@ -47,6 +47,7 @@ BOOL CDPKViewerApp::InitInstance() {
     }
     m_pMainWnd = frame;
 
+    frame->CenterWindow(CWnd::GetDesktopWindow());
     frame->ShowWindow(m_nCmdShow);
     frame->UpdateWindow();
     return TRUE;

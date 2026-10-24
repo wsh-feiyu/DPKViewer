@@ -97,16 +97,20 @@ bool WhscDecode(const std::vector<uint8_t>& stream, std::vector<uint8_t>& plain,
 }
 
 bool WhscEncode(const std::vector<uint8_t>& plain, uint8_t flags, std::vector<uint8_t>& stream, std::string& err,
-                int level) {
+                int level, bool adaptive) {
     stream.clear();
-    const bool compress = (flags & 0x01) != 0;
+    bool compress = (flags & 0x01) != 0;
     const bool encrypt = (flags & 0x02) != 0;
 
     std::vector<uint8_t> payload = plain;
     if (compress) {
         std::vector<uint8_t> packed;
         if (!ZlibCompress(payload.empty() ? nullptr : &payload[0], payload.size(), packed, level, err)) return false;
-        payload.swap(packed);
+        if (adaptive && packed.size() >= payload.size()) {
+            compress = false;  // 压缩不缩反涨：按原样存储
+        } else {
+            payload.swap(packed);
+        }
     }
     if (encrypt) {
         const char* pwd = (flags & 0x04) ? kContentPassword : kPackagePassword;
@@ -116,9 +120,11 @@ bool WhscEncode(const std::vector<uint8_t>& plain, uint8_t flags, std::vector<ui
         payload = DesCryptPayload(payload, key8, false);
     }
 
+    const uint8_t actualFlags =
+        (uint8_t)((compress ? 0x01 : 0x00) | (encrypt ? 0x02 : 0x00) | (flags & 0x04));
     stream.assign(48, 0);
     memcpy(&stream[0], "whsc1.0", 7);
-    stream[15] = flags;
+    stream[15] = actualFlags;
     Md5Digest digest = plain.empty() ? Md5Compute(static_cast<const uint8_t*>(nullptr), 0)
                                      : Md5Compute(&plain[0], plain.size());
     memcpy(&stream[16], digest.data(), 16);
