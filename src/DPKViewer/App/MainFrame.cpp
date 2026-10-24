@@ -3,13 +3,17 @@
 #include <afxcmn.h>
 #include <afxdlgs.h>
 
+#include <map>
+
 #include "MainFrame.h"
 #include "AppUtil.h"
+#include "CompareWindow.h"
 #include "resource.h"
 
 #include "Core/DpkReader.h"
 #include "Core/DpkWriter.h"
 #include "Core/FileIO.h"
+#include "Core/Md5.h"
 #include "Core/StrUtil.h"
 #include "Core/Whsc.h"
 
@@ -79,6 +83,7 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_COMMAND(ID_APP_OPEN, &CMainFrame::OnOpenPackage)
     ON_COMMAND(ID_APP_EXTRACT, &CMainFrame::OnExtractAll)
     ON_COMMAND(ID_APP_PACK, &CMainFrame::OnPackFolder)
+    ON_COMMAND(ID_APP_COMPARE, &CMainFrame::OnComparePackages)
     ON_COMMAND(ID_APP_USAGE, &CMainFrame::OnUsage)
     ON_COMMAND(ID_APP_ABOUT, &CMainFrame::OnAbout)
     ON_COMMAND(ID_APP_EXIT, &CMainFrame::OnAppExit)
@@ -90,6 +95,7 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_EN_CHANGE(IDC_EDIT_FILTER, &CMainFrame::OnFilterChanged)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_ENTRY_LIST, &CMainFrame::OnEntryChanged)
     ON_NOTIFY(LVN_GETDISPINFO, IDC_ENTRY_LIST, &CMainFrame::OnGetdispinfo)
+    ON_MESSAGE(kWMCompareClosed, &CMainFrame::OnCompareClosed)
 END_MESSAGE_MAP()
 
 CMainFrame::CMainFrame() {}
@@ -599,6 +605,31 @@ void CMainFrame::OnPackFolder() {
     MessageBox(summary, L"DPKViewer - 生成", ok ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 
+void CMainFrame::OnComparePackages() {
+    if (m_compareWnd != nullptr && ::IsWindow(m_compareWnd->GetSafeHwnd())) {
+        if (m_compareWnd->IsIconic()) {
+            m_compareWnd->ShowWindow(SW_RESTORE);
+        }
+        m_compareWnd->SetForegroundWindow();
+        return;
+    }
+    m_compareWnd = new CCompareWindow();
+    if (!m_compareWnd->Create(this)) {
+        delete m_compareWnd;
+        m_compareWnd = nullptr;
+        MessageBox(L"创建对比窗口失败。", L"DPKViewer", MB_ICONWARNING);
+        return;
+    }
+    m_compareWnd->ShowWindow(SW_SHOW);
+    m_compareWnd->UpdateWindow();
+}
+
+LRESULT CMainFrame::OnCompareClosed(WPARAM wParam, LPARAM lParam) {
+    // 对比窗口自销毁后回传，避免悬空指针
+    m_compareWnd = nullptr;
+    return 0;
+}
+
 void CMainFrame::OnUsage() {
     CString text;
     text += L"DPKViewer - 寻仙 DPK 包（whpackage1.0）浏览 / 解包 / 生成工具\r\n";
@@ -610,11 +641,18 @@ void CMainFrame::OnUsage() {
             L"单条失败不影响其余条目；进度中按 Esc 可取消。\r\n";
     text += L"3. 生成：点「生成 DPK 包…」选择源文件夹与输出路径，按勾选项决定压缩（zlib level 9）与加密"
             L"（包口令 tianxiawudi）；勾选「沿用已打开包的包头」可用当前包的 1024 字节包头为模板，"
-            L"仅改写其中的目录树/路径表块号。\r\n\r\n";
+            L"仅改写其中的目录树/路径表块号。\r\n";
+    text += L"4. 对比：菜单「工具 → 对比 DPK 包…」打开对比窗口，选择包 A / 包 B 后开始对比；"
+            L"三档深度：仅路径（只比条目清单）、标准（路径 + 流头字段 + 内嵌 MD5 摘要，每条目只读根块 1KB）、"
+            L"完整（逐条目解码并逐字节比对，可检出包内损坏）；结果可按状态筛选（含「仅内容不同」），"
+            L"双击「不同」条目可查看内容对比（文本走行级高亮 diff，非文本走十六进制逐字节比对），"
+            L"也可导出文本报告。「大小差异上限」可防止误选文件：两包大小差异超过设定 MB 数时提示并停止对比"
+            L"（默认 100，可改任意数值或「不限制」）。\r\n\r\n";
     text += L"命令行（同一 exe，不弹界面）：\r\n";
     text += L"  DPKViewer.exe /list    <包>\r\n";
     text += L"  DPKViewer.exe /extract <包> <目录>\r\n";
     text += L"  DPKViewer.exe /pack    <源目录> <输出包> [/level N] [/nocompress] [/noencrypt] [/template <包>]\r\n";
+    text += L"  DPKViewer.exe /compare <包A> <包B> [/paths|/meta|/full]\r\n";
     text += L"  附加：/log <文件>  /quiet\r\n";
     MessageBox(text, L"DPKViewer - 使用说明", MB_ICONINFORMATION);
 }

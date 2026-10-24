@@ -10,6 +10,8 @@
 #include "Core/DpkTypes.h"
 #include "Core/Whsc.h"
 
+class CCompareWindow;
+
 class CMainFrame : public CFrameWnd {
     DECLARE_DYNAMIC(CMainFrame)
 
@@ -24,12 +26,14 @@ protected:
     afx_msg void OnOpenPackage();
     afx_msg void OnExtractAll();
     afx_msg void OnPackFolder();
+    afx_msg void OnComparePackages();
     afx_msg void OnUsage();
     afx_msg void OnAbout();
     afx_msg void OnAppExit();
     afx_msg void OnFilterChanged();
     afx_msg void OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg LRESULT OnCompareClosed(WPARAM wParam, LPARAM lParam);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -68,6 +72,7 @@ private:
     dpk::Reader m_reader;
     std::vector<int> m_view;          // 列表行 -> 条目下标
     std::vector<EntryMeta> m_meta;    // 条目下标 -> whsc 头信息
+    CCompareWindow* m_compareWnd = nullptr;  // 工具：DPK 对比窗口（自销毁，关闭时通知清空）
     bool m_ignoreSel = false;
     bool m_busy = false;
     bool m_cancel = false;

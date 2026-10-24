@@ -21,6 +21,10 @@ BEGIN
         MENUITEM SEPARATOR
         MENUITEM "退出(&X)", ID_APP_EXIT
     END
+    POPUP "工具(&T)"
+    BEGIN
+        MENUITEM "对比 DPK 包(&C)...", ID_APP_COMPARE
+    END
     POPUP "帮助(&H)"
     BEGIN
         MENUITEM "使用说明(&U)...", ID_APP_USAGE

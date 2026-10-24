@@ -25,11 +25,40 @@
 #define IDC_PROGRESS 1013
 #define IDC_STATUS 1014
 
+// compare window controls
+
+// compare window controls
+#define IDC_CMP_EDIT_A 1016
+#define IDC_CMP_BTN_A 1017
+#define IDC_CMP_EDIT_B 1018
+#define IDC_CMP_BTN_B 1019
+#define IDC_CMP_DEPTH 1020
+#define IDC_CMP_RUN 1021
+#define IDC_CMP_EXPORT 1022
+#define IDC_CMP_CLOSE 1023
+#define IDC_CMP_FILTER 1024
+#define IDC_CMP_LIST 1025
+#define IDC_CMP_DETAIL 1026
+#define IDC_CMP_PROGRESS 1027
+#define IDC_CMP_STATUS 1028
+#define IDC_CMP_STATS 1029
+#define IDC_CMP_PKGINFO 1030
+
+// content diff viewer controls
+#define IDC_DIFF_PATH 1032
+#define IDC_DIFF_MODE 1033
+#define IDC_DIFF_CLOSE 1034
+#define IDC_DIFF_TEXT_A 1035
+#define IDC_DIFF_TEXT_B 1036
+#define IDC_DIFF_STATUS 1037
+#define IDC_CMP_SIZELIMIT 1031
+
 // menu commands
 #define ID_APP_OPEN 32771
 #define ID_APP_EXTRACT 32772
 #define ID_APP_PACK 32773
 #define ID_APP_USAGE 32774
+#define ID_APP_COMPARE 32776
 // ID_APP_ABOUT / ID_APP_EXIT are provided by MFC's afxres.h (0xE140 / 0xE141);
 // the definitions below are only a fallback when afxres.h is not included.
 #ifndef ID_APP_ABOUT

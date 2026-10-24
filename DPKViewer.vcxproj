@@ -103,9 +103,12 @@
   <ItemGroup>
     <ClCompile Include="src\DPKViewer\App\AppUtil.cpp" />
     <ClCompile Include="src\DPKViewer\App\Cli.cpp" />
+    <ClCompile Include="src\DPKViewer\App\CompareWindow.cpp" />
+    <ClCompile Include="src\DPKViewer\App\DiffViewer.cpp" />
     <ClCompile Include="src\DPKViewer\App\DpkViewerApp.cpp" />
     <ClCompile Include="src\DPKViewer\App\MainFrame.cpp" />
     <ClCompile Include="src\DPKViewer\Core\Des.cpp" />
+    <ClCompile Include="src\DPKViewer\Core\DpkCompare.cpp" />
     <ClCompile Include="src\DPKViewer\Core\DpkReader.cpp" />
     <ClCompile Include="src\DPKViewer\Core\DpkWriter.cpp" />
     <ClCompile Include="src\DPKViewer\Core\FileIO.cpp" />
@@ -117,9 +120,12 @@
   <ItemGroup>
     <ClInclude Include="src\DPKViewer\App\AppUtil.h" />
     <ClInclude Include="src\DPKViewer\App\Cli.h" />
+    <ClInclude Include="src\DPKViewer\App\CompareWindow.h" />
+    <ClInclude Include="src\DPKViewer\App\DiffViewer.h" />
     <ClInclude Include="src\DPKViewer\App\DpkViewerApp.h" />
     <ClInclude Include="src\DPKViewer\App\MainFrame.h" />
     <ClInclude Include="src\DPKViewer\Core\Des.h" />
+    <ClInclude Include="src\DPKViewer\Core\DpkCompare.h" />
     <ClInclude Include="src\DPKViewer\Core\DpkReader.h" />
     <ClInclude Include="src\DPKViewer\Core\DpkTypes.h" />
     <ClInclude Include="src\DPKViewer\Core\DpkWriter.h" />

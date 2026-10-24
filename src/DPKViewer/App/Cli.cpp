@@ -4,6 +4,7 @@
 //   DPKViewer.exe /list    <包>
 //   DPKViewer.exe /extract <包> <目录>
 //   DPKViewer.exe /pack    <源目录> <输出包> [/level N] [/nocompress] [/noencrypt] [/template <包>]
+//   DPKViewer.exe /compare <包A> <包B> [/paths|/meta|/full] [/maxdiff <MB>]
 // 附加:
 //   /log <文件>      同时把输出写入该文件（UTF-8 带 BOM）
 //   /quiet           不向控制台输出（/log 仍生效）
@@ -14,6 +15,7 @@
 
 #include "AppUtil.h"
 
+#include "Core/DpkCompare.h"
 #include "Core/DpkReader.h"
 #include "Core/DpkWriter.h"
 #include "Core/FileIO.h"
@@ -208,10 +210,92 @@ int CliPack(const std::vector<std::wstring>& args, Reporter& out) {
     return 0;
 }
 
+int CliCompare(const std::vector<std::wstring>& args, Reporter& out) {
+    if (args.size() < 2) {
+        out.Line("FAIL /compare 需要 <包A> <包B> [/paths|/meta|/full] [/maxdiff <MB>]");
+        return 1;
+    }
+    const std::wstring& pkgA = args[0];
+    const std::wstring& pkgB = args[1];
+    dpk::CompareDepth depth = dpk::CompareDepth::Metadata;
+    long long maxDiffMB = -1;  // -1 不限制
+    for (size_t i = 2; i < args.size(); ++i) {
+        const std::wstring a = Lower(args[i]);
+        if (a == L"/paths") {
+            depth = dpk::CompareDepth::PathsOnly;
+        } else if (a == L"/meta") {
+            depth = dpk::CompareDepth::Metadata;
+        } else if (a == L"/full") {
+            depth = dpk::CompareDepth::Full;
+        } else if (a == L"/maxdiff" && i + 1 < args.size()) {
+            maxDiffMB = _wtol(args[++i].c_str());
+            if (maxDiffMB <= 0) maxDiffMB = -1;  // 与 GUI 一致：0 或负数 = 不限制
+        } else {
+            out.Line("FAIL 无法识别的选项: " + dpk::WideToUtf8(args[i]));
+            return 1;
+        }
+    }
+    // 可选的大小差异检查（与 GUI 的「大小差异上限」一致），防止误选文件
+    if (maxDiffMB >= 0) {
+        uint64_t sizeA = 0, sizeB = 0;
+        if (dpk::FileExists(pkgA) && dpk::FileExists(pkgB) && dpk::GetFileSize(pkgA, sizeA) &&
+            dpk::GetFileSize(pkgB, sizeB)) {
+            const uint64_t diff = sizeA > sizeB ? sizeA - sizeB : sizeB - sizeA;
+            if (diff > (uint64_t)maxDiffMB * 1024ull * 1024ull) {
+                out.Line("FAIL 已停止对比: 包大小差异 " + dpk::FormatBytes(diff) + " 超过上限 " +
+                         std::to_string(maxDiffMB) + " MB（包 A " + dpk::FormatBytes(sizeA) + "，包 B " +
+                         dpk::FormatBytes(sizeB) + "）");
+                return 1;
+            }
+        }
+    }
+    dpk::CompareResult result;
+    std::string err;
+    if (!dpk::ComparePackages(pkgA, pkgB, depth, result, err)) {
+        out.Line("FAIL 对比失败: " + err);
+        return 1;
+    }
+    const char* depthName = depth == dpk::CompareDepth::PathsOnly ? "仅路径"
+                            : depth == dpk::CompareDepth::Full    ? "完整"
+                                                                   : "标准";
+    {
+        char head[512];
+        _snprintf_s(head, sizeof(head), _TRUNCATE,
+                    "包 A: %s | %llu 字节 | %u 块 | %llu 条", dpk::WideToUtf8(pkgA).c_str(),
+                    (unsigned long long)result.pkgA.fileSize, result.pkgA.totalBlocks,
+                    (unsigned long long)result.pkgA.entryCount);
+        out.Line(std::string(head));
+        _snprintf_s(head, sizeof(head), _TRUNCATE,
+                    "包 B: %s | %llu 字节 | %u 块 | %llu 条", dpk::WideToUtf8(pkgB).c_str(),
+                    (unsigned long long)result.pkgB.fileSize, result.pkgB.totalBlocks,
+                    (unsigned long long)result.pkgB.entryCount);
+        out.Line(std::string(head));
+    }
+    for (size_t i = 0; i < result.entries.size(); ++i) {
+        const dpk::CompareEntry& e = result.entries[i];
+        if (e.status == dpk::CompareStatus::Same) continue;
+        const char* stName = e.status == dpk::CompareStatus::Different ? "不同"
+                             : e.status == dpk::CompareStatus::OnlyA    ? "仅A"
+                             : e.status == dpk::CompareStatus::OnlyB    ? "仅B"
+                                                                        : "错误";
+        out.Line("  [" + std::string(stName) + "] " + e.pathUtf8 + (e.note.empty() ? "" : " - " + e.note));
+    }
+    char tail[256];
+    _snprintf_s(tail, sizeof(tail), _TRUNCATE, "%s（%s深度）: 相同 %llu，不同 %llu，仅A %llu，仅B %llu，错误 %llu",
+                result.completed ? "OK 对比完成" : "WARN 对比已取消", depthName,
+                (unsigned long long)result.stats.same, (unsigned long long)result.stats.different,
+                (unsigned long long)result.stats.onlyA, (unsigned long long)result.stats.onlyB,
+                (unsigned long long)result.stats.errors);
+    out.Line(std::string(tail));
+    if (!result.completed) return 1;
+    return (result.stats.different || result.stats.onlyA || result.stats.onlyB || result.stats.errors) ? 1 : 0;
+}
+
 void CliUsage(const std::vector<std::wstring>& args, Reporter& out) {
     out.Line("用法: DPKViewer.exe /list    <包>");
     out.Line("      DPKViewer.exe /extract <包> <目录>");
     out.Line("      DPKViewer.exe /pack    <源目录> <输出包> [/level N] [/nocompress] [/noencrypt] [/template <包>]");
+    out.Line("      DPKViewer.exe /compare <包A> <包B> [/paths|/meta|/full] [/maxdiff <MB>]");
     out.Line("      /log <文件>  /quiet");
     out.Line("参数 " + std::to_string(args.size()) + " 个，缺少必要的包路径");
 }
@@ -227,7 +311,7 @@ int RunCli(const std::wstring& cmdLine) {
     for (size_t i = 0; i < all.size(); ++i) {
         const std::wstring a = Lower(all[i]);
         if (a == L"/list" || a == L"/extract" || a == L"/pack" || a == L"-list" || a == L"-extract" || a == L"-pack" ||
-            a == L"/?" || a == L"/help" || a == L"-h") {
+            a == L"/compare" || a == L"-compare" || a == L"/?" || a == L"/help" || a == L"-h") {
             command = a;
         } else if (a == L"/log" && i + 1 < all.size()) {
             logPath = all[++i];
@@ -266,6 +350,9 @@ int RunCli(const std::wstring& cmdLine) {
             return 1;
         }
         return CliExtract(rest[0], rest[1], out);
+    }
+    if (command == L"/compare" || command == L"-compare") {
+        return CliCompare(rest, out);
     }
     return CliPack(rest, out);
 }

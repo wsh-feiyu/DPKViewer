@@ -18,6 +18,12 @@
     <ClCompile Include="src\DPKViewer\App\Cli.cpp">
       <Filter>App</Filter>
     </ClCompile>
+    <ClCompile Include="src\DPKViewer\App\CompareWindow.cpp">
+      <Filter>App</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DPKViewer\App\DiffViewer.cpp">
+      <Filter>App</Filter>
+    </ClCompile>
     <ClCompile Include="src\DPKViewer\App\DpkViewerApp.cpp">
       <Filter>App</Filter>
     </ClCompile>
@@ -25,6 +31,9 @@
       <Filter>App</Filter>
     </ClCompile>
     <ClCompile Include="src\DPKViewer\Core\Des.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
+    <ClCompile Include="src\DPKViewer\Core\DpkCompare.cpp">
       <Filter>Core</Filter>
     </ClCompile>
     <ClCompile Include="src\DPKViewer\Core\DpkReader.cpp">
@@ -56,6 +65,12 @@
     <ClInclude Include="src\DPKViewer\App\Cli.h">
       <Filter>App</Filter>
     </ClInclude>
+    <ClInclude Include="src\DPKViewer\App\CompareWindow.h">
+      <Filter>App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DPKViewer\App\DiffViewer.h">
+      <Filter>App</Filter>
+    </ClInclude>
     <ClInclude Include="src\DPKViewer\App\DpkViewerApp.h">
       <Filter>App</Filter>
     </ClInclude>
@@ -63,6 +78,9 @@
       <Filter>App</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\Core\Des.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DPKViewer\Core\DpkCompare.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\Core\DpkReader.h">
