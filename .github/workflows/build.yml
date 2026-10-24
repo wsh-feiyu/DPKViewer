@@ -22,50 +22,52 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # windows-latest 预装 VS Enterprise，但 MFC 组件不一定装
-      # 先用 vswhere 找一个已装 MFC 的 VS；没有就 winget 给最新 VS 补上
-      - name: Ensure MFC + Locate MSBuild
-        id: locate
+      # ========== 关键：windows-latest 自带 VS Enterprise 但默认不带 MFC ==========
+      # setup.exe 路径用 vswhere 拿 installationPath 再拼 ..\..\Installer\setup.exe
+      # 如果 vswhere -property installerPath 挂，直接从已知安装路径倒推
+      - name: Install MFC component
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
-          # 先找已带 MFC 的 VS（最新优先）
-          $msbuild = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.ATLMFC `
-            -find "MSBuild\**\Bin\MSBuild.exe" 2>$null | Select-Object -First 1
+          # 1. 拿最新 VS 的 installationPath
+          $instPath = & $vswhere -latest -products * -property installationPath | Select-Object -First 1
+          Write-Host "Latest VS installationPath: $instPath"
 
-          if (-not $msbuild) {
-            Write-Host "MFC not installed, adding via winget..."
-            # 取出最新 VS 的安装目录和实例 ID
-            $latestPath = & $vswhere -latest -products * -property installationPath | Select-Object -First 1
-            $latestId   = & $vswhere -latest -products * -property instanceId   | Select-Object -First 1
-            Write-Host "Target VS: $latestPath (instance=$latestId)"
-
-            # 用 winget modify 加 MFC
-            winget modify --id Microsoft.VisualStudio.2022.BuildTools `
-              --silent --accept-package-agreements --accept-source-agreements `
-              --override "--quiet --norestart --add Microsoft.VisualStudio.Component.VC.ATLMFC --passive --wait" 2>$null | Out-Null
-            # winget modify 可能因为 VS 是 Enterprise 而非 BuildTools 而失败，兜底用 setup.exe
-            if ($LASTEXITCODE -ne 0) {
-              $setup = Join-Path $latestPath "Common7\Tools\..\..\..\..\setup.exe"
-              if (-not (Test-Path $setup)) {
-                $installer = & $vswhere -latest -products * -property installerPath
-                $setup = Join-Path $installer "setup.exe"
-              }
-              Write-Host "Fallback setup: $setup"
-              & $setup modify --quiet --norestart `
-                --add Microsoft.VisualStudio.Component.VC.ATLMFC `
-                --wait 2>&1 | Out-Null
-            }
-
-            # 重新找已装 MFC 的 MSBuild
-            $msbuild = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.ATLMFC `
-              -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+          # 2. 拼 setup.exe（常见两种位置）
+          $setupCandidates = @(
+            (Join-Path $instPath "..\..\Installer\setup.exe"),  # VS 15/17/18 通用
+            (Join-Path $instPath "Common7\IDE\devenv.exe"),     # 验证 instPath 是否有效
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          )
+          $setup = $null
+          foreach ($c in $setupCandidates) {
+            $norm = [System.IO.Path]::GetFullPath($c)
+            if (Test-Path $norm) { $setup = $norm; break }
           }
+          if (-not $setup) { throw "setup.exe 未找到，候选：$($setupCandidates -join ', ')" }
+          Write-Host "Using setup: $setup"
 
-          if (-not $msbuild) { throw "MFC MSBuild not found after install attempt" }
-          Write-Host "MSBuild at: $msbuild"
+          # 3. modify 加 MFC 组件（v170/180 工具链兼容）
+          & $setup modify --quiet --norestart `
+            --add Microsoft.VisualStudio.Component.VC.ATLMFC `
+            --add Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre `
+            --wait
+          if ($LASTEXITCODE -ne 0) { throw "setup modify failed (exit=$LASTEXITCODE)" }
+          Write-Host "MFC installed OK"
+
+      - name: Locate MSBuild
+        id: locate
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          # 必须 -requires ATLMFC 确认它装好了
+          $msbuild = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.ATLMFC `
+            -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+          if (-not $msbuild) { throw "没找到带 MFC 的 MSBuild" }
+          Write-Host "MSBuild: $msbuild"
           "msbuild=$msbuild" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
 
       - name: Build ${{ matrix.platform }} Release
