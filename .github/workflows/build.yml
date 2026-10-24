@@ -22,15 +22,29 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # 直接用 windows-latest 预装的 vswhere 找 MSBuild，比 setup-msbuild 更稳
+      # windows-latest 预装的是 VS Build Tools，但 MFC 组件默认不带
+      # 用 vs_installer 静默装 MFC（v143 最新 + 对应架构）
+      - name: Install MFC component
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installer = & $vswhere -latest -products * -property installerPath
+          $installExe = Join-Path $installer "setup.exe"
+          Write-Host "Installer: $installExe"
+          & $installExe modify --quiet --norestart `
+            --add Microsoft.VisualStudio.Component.VC.ATLMFC `
+            --add Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre `
+            --add Microsoft.VisualStudio.Component.Windows11SDK.26100 `
+            --wait | Out-Null
+          Write-Host "MFC install done"
+
       - name: Locate MSBuild
         id: locate
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
-            -find "MSBuild\**\Bin\MSBuild.exe" | Tee-Object -FilePath msbuild_path.txt
-          $path = Get-Content msbuild_path.txt -First 1
+          $path = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+            -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
           Write-Host "MSBuild at: $path"
           "msbuild=$path" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
 
