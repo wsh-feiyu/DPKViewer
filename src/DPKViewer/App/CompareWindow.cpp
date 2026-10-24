@@ -213,7 +213,7 @@ int CCompareWindow::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     ApplyFontToChildren();
 
     Layout();
-    CenterWindow(GetParent());
+    CenterWindow(GetDesktopWindow());
     return 0;
 }
 

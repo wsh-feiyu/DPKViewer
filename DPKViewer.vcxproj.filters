@@ -51,6 +51,9 @@
     <ClCompile Include="src\DPKViewer\Core\StrUtil.cpp">
       <Filter>Core</Filter>
     </ClCompile>
+    <ClCompile Include="src\DPKViewer\Core\TextDiff.cpp">
+      <Filter>Core</Filter>
+    </ClCompile>
     <ClCompile Include="src\DPKViewer\Core\Whsc.cpp">
       <Filter>Core</Filter>
     </ClCompile>
@@ -99,6 +102,9 @@
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\Core\StrUtil.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DPKViewer\Core\TextDiff.h">
       <Filter>Core</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\Core\Whsc.h">

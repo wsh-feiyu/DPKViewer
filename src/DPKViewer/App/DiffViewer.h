@@ -32,19 +32,8 @@ protected:
     DECLARE_MESSAGE_MAP()
 
 private:
-    // 行级对齐计划：aIdx/bIdx 为该行在两侧行数组中的下标（-1 表示该侧无对应行）
-    struct DiffRow {
-        int aIdx = -1;
-        int bIdx = -1;
-        COLORREF bgA = kDiffBgSame;
-        COLORREF bgB = kDiffBgSame;
-    };
-
     void Layout();
     void BuildDiff();
-    // 返回 false 表示行数超出 LCS 动态规划容量，退化为公共前后缀对齐
-    bool BuildRowPlanText(const std::vector<std::wstring>& la, const std::vector<std::wstring>& lb,
-                          std::vector<DiffRow>& rows);
     void BuildTextDiff();
     void BuildHexDiff();
     void AppendRuns(CRichEditCtrl& re, const std::vector<std::pair<std::wstring, COLORREF>>& items);

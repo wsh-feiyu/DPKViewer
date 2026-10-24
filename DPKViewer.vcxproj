@@ -114,6 +114,7 @@
     <ClCompile Include="src\DPKViewer\Core\FileIO.cpp" />
     <ClCompile Include="src\DPKViewer\Core\Md5.cpp" />
     <ClCompile Include="src\DPKViewer\Core\StrUtil.cpp" />
+    <ClCompile Include="src\DPKViewer\Core\TextDiff.cpp" />
     <ClCompile Include="src\DPKViewer\Core\Whsc.cpp" />
     <ClCompile Include="src\DPKViewer\Core\Zlib.cpp" />
   </ItemGroup>
@@ -132,6 +133,7 @@
     <ClInclude Include="src\DPKViewer\Core\FileIO.h" />
     <ClInclude Include="src\DPKViewer\Core\Md5.h" />
     <ClInclude Include="src\DPKViewer\Core\StrUtil.h" />
+    <ClInclude Include="src\DPKViewer\Core\TextDiff.h" />
     <ClInclude Include="src\DPKViewer\Core\Whsc.h" />
     <ClInclude Include="src\DPKViewer\Core\Zlib.h" />
     <ClInclude Include="res\resource.h" />

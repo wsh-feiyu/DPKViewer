@@ -15,6 +15,7 @@
 
 #include "Core/DpkReader.h"
 #include "Core/StrUtil.h"
+#include "Core/TextDiff.h"
 
 namespace {
 
@@ -30,9 +31,9 @@ const int kStatusH = 22;
 // 视图容量上限：防止超大条目卡死界面
 const size_t kMaxTextLines = 10000;      // 文本模式每侧最多参与对比的行数
 const size_t kMaxHexBytes = 128 * 1024;  // 十六进制模式每侧最多显示的字节数
-const double kMaxLcsCells = 12000000.0;  // 行级 LCS 动态规划单元上限，超出退化为前后缀对齐
 
-const COLORREF kBgDiff = RGB(255, 235, 156);  // 内容修改：黄
+const COLORREF kBgDiff = RGB(255, 235, 156);  // 内容修改的行：黄
+const COLORREF kBgDeep = RGB(255, 168, 112);  // 行内差异片段：橙
 const COLORREF kBgDel = RGB(255, 205, 205);   // A 独有（删除）：浅红
 const COLORREF kBgIns = RGB(205, 245, 205);   // B 独有（新增）：浅绿
 const COLORREF kBgNote = RGB(226, 239, 255);  // 说明行：浅蓝
@@ -176,7 +177,7 @@ int CDiffViewer::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     m_cmbMode.SetCurSel(looksText(m_plainA, m_okA) && looksText(m_plainB, m_okB) ? 0 : 1);
 
     BuildDiff();
-    CenterWindow(GetParent());
+    CenterWindow(GetDesktopWindow());
     return 0;
 }
 
@@ -262,113 +263,6 @@ void CDiffViewer::AppendRuns(CRichEditCtrl& re, const std::vector<std::pair<std:
     re.SetRedraw(TRUE);
 }
 
-bool CDiffViewer::BuildRowPlanText(const std::vector<std::wstring>& la, const std::vector<std::wstring>& lb,
-                                   std::vector<DiffRow>& rows) {
-    const size_t n = la.size();
-    const size_t m = lb.size();
-
-    // 行文本 -> 整数 id，把字符串比较变成整数比较
-    std::map<std::wstring, int> pool;
-    auto intern = [&pool](const std::vector<std::wstring>& ls) {
-        std::vector<int> ids;
-        ids.reserve(ls.size());
-        for (const std::wstring& s : ls) {
-            auto it = pool.find(s);
-            if (it == pool.end()) it = pool.emplace(s, (int)pool.size()).first;
-            ids.push_back(it->second);
-        }
-        return ids;
-    };
-    const std::vector<int> va = intern(la);
-    const std::vector<int> vb = intern(lb);
-
-    if ((double)n * (double)m <= kMaxLcsCells) {
-        // 经典 LCS 动态规划：dir 0=对角（行相等）1=上方 2=左方
-        const size_t W = m + 1;
-        std::vector<uint16_t> lcs((n + 1) * W, 0);
-        std::vector<uint8_t> dir((n + 1) * W, 0);
-        for (size_t i = 1; i <= n; ++i) {
-            for (size_t j = 1; j <= m; ++j) {
-                const size_t cur = i * W + j;
-                if (va[i - 1] == vb[j - 1]) {
-                    lcs[cur] = (uint16_t)(lcs[(i - 1) * W + j - 1] + 1);
-                    dir[cur] = 0;
-                } else if (lcs[(i - 1) * W + j] >= lcs[cur - 1]) {
-                    lcs[cur] = lcs[(i - 1) * W + j];
-                    dir[cur] = 1;
-                } else {
-                    lcs[cur] = lcs[cur - 1];
-                    dir[cur] = 2;
-                }
-            }
-        }
-        std::vector<DiffRow> rev;
-        size_t i = n, j = m;
-        while (i > 0 || j > 0) {
-            if (i > 0 && j > 0 && dir[i * W + j] == 0) {
-                DiffRow r;
-                r.aIdx = (int)(i - 1);
-                r.bIdx = (int)(j - 1);
-                rev.push_back(r);
-                --i;
-                --j;
-            } else if (j > 0 && (i == 0 || dir[i * W + j] == 2)) {
-                DiffRow r;
-                r.bIdx = (int)(j - 1);
-                r.bgB = kBgIns;
-                rev.push_back(r);
-                --j;
-            } else {
-                DiffRow r;
-                r.aIdx = (int)(i - 1);
-                r.bgA = kBgDel;
-                rev.push_back(r);
-                --i;
-            }
-        }
-        std::reverse(rev.begin(), rev.end());
-        rows.swap(rev);
-        return true;
-    }
-
-    // 超出动态规划容量：对齐公共前缀/后缀，中段整体标记
-    size_t p = 0;
-    while (p < n && p < m && va[p] == vb[p]) ++p;
-    size_t sa = n, sb = m;
-    while (sa > p && sb > p && va[sa - 1] == vb[sb - 1]) {
-        --sa;
-        --sb;
-    }
-    for (size_t k = 0; k < p; ++k) {
-        DiffRow r;
-        r.aIdx = (int)k;
-        r.bIdx = (int)k;
-        rows.push_back(r);
-    }
-    for (size_t k = p; k < sa; ++k) {
-        DiffRow r;
-        r.aIdx = (int)k;
-        r.bgA = kBgDel;
-        r.bgB = kBgGap;
-        rows.push_back(r);
-    }
-    for (size_t k = p; k < sb; ++k) {
-        DiffRow r;
-        r.bIdx = (int)k;
-        r.bgB = kBgIns;
-        r.bgA = kBgGap;
-        rows.push_back(r);
-    }
-    const size_t tailPairs = std::min(n - sa, m - sb);
-    for (size_t t = 0; t < tailPairs; ++t) {
-        DiffRow r;
-        r.aIdx = (int)(sa + t);
-        r.bIdx = (int)(sb + t);
-        rows.push_back(r);
-    }
-    return false;
-}
-
 void CDiffViewer::BuildTextDiff() {
     // 整段解码为宽字符文本（UTF-8 严格优先，失败回退系统 ANSI 代码页）
     auto toText = [](const std::vector<uint8_t>& p) {
@@ -394,31 +288,52 @@ void CDiffViewer::BuildTextDiff() {
         capped = true;
     }
 
-    std::vector<DiffRow> rows;
-    const bool precise = BuildRowPlanText(la, lb, rows);
+    // 行级对齐：精确 LCS + 相似行二次配对（Core/TextDiff）
+    std::vector<dpk::TextDiffRow> rows;
+    const bool precise = dpk::TextDiffRows(la, lb, rows);
 
     size_t same = 0, chg = 0, del = 0, ins = 0;
-    for (const DiffRow& r : rows) {
-        if (r.aIdx >= 0 && r.bIdx >= 0) {
-            if (r.bgA == kDiffBgSame) {
-                ++same;
-            } else {
-                ++chg;
-            }
-        } else if (r.aIdx >= 0) {
-            ++del;
-        } else {
-            ++ins;
+    for (const dpk::TextDiffRow& r : rows) {
+        switch (r.kind) {
+            case 0: ++same; break;
+            case 1: ++chg; break;
+            case 2: ++del; break;
+            default: ++ins; break;
         }
     }
 
-    for (const DiffRow& r : rows) {
+    for (const dpk::TextDiffRow& r : rows) {
         const bool hasA = r.aIdx >= 0;
         const bool hasB = r.bIdx >= 0;
-        itemsA.emplace_back(hasA ? la[(size_t)r.aIdx] : std::wstring(L"·"), hasA ? r.bgA : kBgGap);
-        itemsB.emplace_back(hasB ? lb[(size_t)r.bIdx] : std::wstring(L"·"), hasB ? r.bgB : kBgGap);
-        itemsA.emplace_back(L"\r\n", kDiffBgSame);
-        itemsB.emplace_back(L"\r\n", kDiffBgSame);
+        if (r.kind == 1 && hasA && hasB) {
+            // 部分修改的行：公共前后缀之外的差异片段用橙色标出
+            const std::wstring& sa = la[(size_t)r.aIdx];
+            const std::wstring& sb = lb[(size_t)r.bIdx];
+            const size_t p = dpk::TextCommonPrefix(sa, sb);
+            const size_t s = dpk::TextCommonSuffix(sa, sb, std::min(sa.size(), sb.size()) - p);
+            itemsA.emplace_back(sa.substr(0, p), kBgDiff);
+            if (sa.size() > p + s) itemsA.emplace_back(sa.substr(p, sa.size() - p - s), kBgDeep);
+            itemsA.emplace_back(sa.substr(sa.size() - s), kBgDiff);
+            itemsA.emplace_back(L"\r\n", kDiffBgSame);
+            itemsB.emplace_back(sb.substr(0, p), kBgDiff);
+            if (sb.size() > p + s) itemsB.emplace_back(sb.substr(p, sb.size() - p - s), kBgDeep);
+            itemsB.emplace_back(sb.substr(sb.size() - s), kBgDiff);
+            itemsB.emplace_back(L"\r\n", kDiffBgSame);
+        } else {
+            COLORREF bgA = kDiffBgSame;
+            COLORREF bgB = kDiffBgSame;
+            if (r.kind == 2) {
+                bgA = kBgDel;
+                bgB = kBgGap;
+            } else if (r.kind == 3) {
+                bgB = kBgIns;
+                bgA = kBgGap;
+            }
+            itemsA.emplace_back(hasA ? la[(size_t)r.aIdx] : std::wstring(L"·"), bgA);
+            itemsB.emplace_back(hasB ? lb[(size_t)r.bIdx] : std::wstring(L"·"), bgB);
+            itemsA.emplace_back(L"\r\n", kDiffBgSame);
+            itemsB.emplace_back(L"\r\n", kDiffBgSame);
+        }
     }
     if (capped) {
         CString note;
