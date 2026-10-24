@@ -22,47 +22,40 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # ========== 关键：windows-latest 自带 VS Enterprise 但默认不带 MFC ==========
-      # setup.exe 路径用 vswhere 拿 installationPath 再拼 ..\..\Installer\setup.exe
-      # 如果 vswhere -property installerPath 挂，直接从已知安装路径倒推
+      # windows-latest 预装 VS Enterprise，但 MFC 组件默认不装
+      # setup.exe 是 VS 全局安装器，固定位置：
+      #   ${ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe
       - name: Install MFC component
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 
-          # 1. 拿最新 VS 的 installationPath
-          $instPath = & $vswhere -latest -products * -property installationPath | Select-Object -First 1
-          Write-Host "Latest VS installationPath: $instPath"
+          # 全局 setup.exe（跟 VS 版本无关，所有 VS 共用）
+          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          if (-not (Test-Path $setup)) { throw "setup.exe 未找到: $setup" }
+          Write-Host "setup.exe: $setup"
 
-          # 2. 拼 setup.exe（常见两种位置）
-          $setupCandidates = @(
-            (Join-Path $instPath "..\..\Installer\setup.exe"),  # VS 15/17/18 通用
-            (Join-Path $instPath "Common7\IDE\devenv.exe"),     # 验证 instPath 是否有效
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          )
-          $setup = $null
-          foreach ($c in $setupCandidates) {
-            $norm = [System.IO.Path]::GetFullPath($c)
-            if (Test-Path $norm) { $setup = $norm; break }
-          }
-          if (-not $setup) { throw "setup.exe 未找到，候选：$($setupCandidates -join ', ')" }
-          Write-Host "Using setup: $setup"
+          # 先列出当前装了哪些组件，便于调试
+          & $setup list --products * 2>&1 | Select-String -Pattern "ATLMFC|VC\.ATL|InstallPath" | Out-String | Write-Host
 
-          # 3. modify 加 MFC 组件（v170/180 工具链兼容）
+          # modify 给"所有已安装的 VS"加 MFC 组件（--installPath "" 不指定就是 modify 全部）
           & $setup modify --quiet --norestart `
             --add Microsoft.VisualStudio.Component.VC.ATLMFC `
             --add Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre `
             --wait
-          if ($LASTEXITCODE -ne 0) { throw "setup modify failed (exit=$LASTEXITCODE)" }
-          Write-Host "MFC installed OK"
+          Write-Host "setup exit code: $LASTEXITCODE"
+          # exit code 0/3010=OK 需要重启；3006=组件已装
+          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3006 -and $LASTEXITCODE -ne 3010) {
+            throw "setup modify failed (exit=$LASTEXITCODE)"
+          }
+          Write-Host "MFC install OK (exit=$LASTEXITCODE)"
 
-      - name: Locate MSBuild
+      - name: Locate MSBuild (with MFC)
         id: locate
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          # 必须 -requires ATLMFC 确认它装好了
+          # 必须 -requires ATLMFC 确认装好
           $msbuild = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.ATLMFC `
             -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
