@@ -31,7 +31,9 @@ protected:
     afx_msg void OnAbout();
     afx_msg void OnAppExit();
     afx_msg void OnFilterChanged();
+    afx_msg void OnFolderViewChanged();
     afx_msg void OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg void OnListDblClk(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg LRESULT OnCompareClosed(WPARAM wParam, LPARAM lParam);
     DECLARE_MESSAGE_MAP()
@@ -43,6 +45,13 @@ private:
         std::string err;
         // 校验结果：-1 未校验 / 0 校验失败 / 1 校验通过
         int verifyState = -1;
+    };
+
+    // 列表行：entryIdx >= 0 为条目行；entryIdx < 0 且 isParent 为「..」，否则为文件夹行
+    struct ListRow {
+        int entryIdx = -1;
+        bool isParent = false;
+        std::wstring name;
     };
 
     void Layout();
@@ -62,6 +71,7 @@ private:
     CButton m_chkCompress;
     CButton m_chkEncrypt;
     CButton m_chkTemplate;
+    CButton m_chkFolder;
     CListCtrl m_list;
     CEdit m_detail;
     CProgressCtrl m_progress;
@@ -70,8 +80,10 @@ private:
     CFont m_fontMain;           // 统一的主字体：Microsoft YaHei UI / Segoe UI，按 DPI 计算像素高度
 
     dpk::Reader m_reader;
-    std::vector<int> m_view;          // 列表行 -> 条目下标
+    std::vector<ListRow> m_view;      // 列表行（平铺模式全部为条目行）
     std::vector<EntryMeta> m_meta;    // 条目下标 -> whsc 头信息
+    bool m_folderMode = true;         // 文件夹收纳视图（默认开）
+    std::wstring m_curFolder;         // 当前文件夹（L"" = 根，'/' 分隔，无尾斜杠）
     CCompareWindow* m_compareWnd = nullptr;  // 工具：DPK 对比窗口（自销毁，关闭时通知清空）
     bool m_ignoreSel = false;
     bool m_busy = false;

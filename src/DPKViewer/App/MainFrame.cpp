@@ -3,7 +3,9 @@
 #include <afxcmn.h>
 #include <afxdlgs.h>
 
+#include <algorithm>
 #include <map>
+#include <set>
 
 #include "MainFrame.h"
 #include "AppUtil.h"
@@ -93,7 +95,9 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_BN_CLICKED(IDC_BTN_USAGE, &CMainFrame::OnUsage)
     ON_BN_CLICKED(IDC_BTN_ABOUT, &CMainFrame::OnAbout)
     ON_EN_CHANGE(IDC_EDIT_FILTER, &CMainFrame::OnFilterChanged)
+    ON_BN_CLICKED(IDC_CHK_FOLDER, &CMainFrame::OnFolderViewChanged)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_ENTRY_LIST, &CMainFrame::OnEntryChanged)
+    ON_NOTIFY(NM_DBLCLK, IDC_ENTRY_LIST, &CMainFrame::OnListDblClk)
     ON_NOTIFY(LVN_GETDISPINFO, IDC_ENTRY_LIST, &CMainFrame::OnGetdispinfo)
     ON_MESSAGE(kWMCompareClosed, &CMainFrame::OnCompareClosed)
 END_MESSAGE_MAP()
@@ -129,8 +133,11 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     m_chkEncrypt.Create(L"加密", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, CRect(0, 0, 10, 10), this, IDC_CHK_ENCRYPT);
     m_chkTemplate.Create(L"沿用已打开包的包头", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, CRect(0, 0, 10, 10), this,
                          IDC_CHK_TEMPLATE);
+    m_chkFolder.Create(L"文件夹收纳(&F)", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, CRect(0, 0, 10, 10), this,
+                       IDC_CHK_FOLDER);
     m_chkCompress.SetCheck(BST_CHECKED);
     m_chkEncrypt.SetCheck(BST_CHECKED);
+    m_chkFolder.SetCheck(BST_CHECKED);
 
     m_list.Create(WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
                       LVS_OWNERDATA,
@@ -189,6 +196,7 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct) {
             m_chkCompress.GetSafeHwnd(),
             m_chkEncrypt.GetSafeHwnd(),
             m_chkTemplate.GetSafeHwnd(),
+            m_chkFolder.GetSafeHwnd(),
             m_list.GetSafeHwnd(),
             m_detail.GetSafeHwnd(),
             m_progress.GetSafeHwnd(),
@@ -239,6 +247,8 @@ void CMainFrame::Layout() {
     m_chkEncrypt.MoveWindow(fx, row2, 70, kRowH);
     fx += 70 + kRowGap;
     m_chkTemplate.MoveWindow(fx, row2, 170, kRowH);
+    fx += 170 + kRowGap;
+    m_chkFolder.MoveWindow(fx, row2, 96, kRowH);
 
     const int listTop = row2 + kRowH + kRowGap;
     int statusTop = rc.Height() - kStatusH;
@@ -297,6 +307,7 @@ bool CMainFrame::OpenPackage(const std::wstring& path) {
         MessageBox(W("打开包失败: " + err), L"DPKViewer", MB_ICONWARNING);
         return false;
     }
+    m_curFolder.clear();  // 新包从根目录开始浏览
     // computeBlockCounts=false：块数是 O(条目数 × 平均块数) 的遍历，大包要几分钟
     // 列表页先不显示块数，选中条目时 ShowDetail 里按需 CountChain
     if (!m_reader.LoadEntries(err, false)) {
@@ -333,20 +344,100 @@ void CMainFrame::RefreshList() {
     m_edtFilter.GetWindowText(filter);
     const std::string filterU8 = dpk::ToLowerAscii(dpk::WideToUtf8(std::wstring(filter)));
 
-    // 只构建过滤后的下标映射，不做任何 I/O
+    // 只构建行映射，不做任何 I/O
     // LVS_OWNERDATA 虚拟列表：SetItemCountEx 后由 LVN_GETDISPINFO 按需填充
-    for (size_t i = 0; i < entries.size(); ++i) {
+    if (m_folderMode) {
         if (!filterU8.empty()) {
-            const std::string lower = dpk::ToLowerAscii(entries[i].pathUtf8);
-            if (lower.find(filterU8) == std::string::npos) continue;
+            // 筛选时全局搜索整个包：显示所有路径匹配的条目（完整路径），不限于当前文件夹
+            for (size_t i = 0; i < entries.size(); ++i) {
+                const std::string lower = dpk::ToLowerAscii(entries[i].pathUtf8);
+                if (lower.find(filterU8) == std::string::npos) continue;
+                ListRow row;
+                row.entryIdx = (int)i;
+                row.name = dpk::Utf8ToWide(entries[i].pathUtf8);  // 名称列显示完整路径
+                m_view.push_back(row);
+            }
+            m_list.SetItemCountEx((int)m_view.size(), LVSICF_NOSCROLL);
+            m_ignoreSel = false;
+            CString status;
+            status.Format(L"筛选「%s」（全包范围）：匹配 %zu 条（共 %u 条目）。清空筛选返回文件夹浏览。",
+                          (LPCTSTR)filter, m_view.size(), (unsigned)entries.size());
+            SetStatus(status);
+            return;
         }
-        m_view.push_back((int)i);
+        // 文件夹收纳视图：当前文件夹下的子文件夹在前、文件在后，按名称排序
+        const std::string prefixU8 =
+            m_curFolder.empty() ? std::string() : dpk::WideToUtf8(m_curFolder) + "/";
+        std::vector<std::pair<std::wstring, int>> folderRows, fileRows;
+        for (size_t i = 0; i < entries.size(); ++i) {
+            const std::string& p = entries[i].pathUtf8;
+            if (!prefixU8.empty() &&
+                (p.size() <= prefixU8.size() || p.compare(0, prefixU8.size(), prefixU8) != 0)) {
+                continue;
+            }
+            const std::string rest = p.substr(prefixU8.size());
+            const size_t slash = rest.find('/');
+            if (slash == std::string::npos) {
+                fileRows.emplace_back(dpk::Utf8ToWide(rest), (int)i);
+            } else {
+                folderRows.emplace_back(dpk::Utf8ToWide(rest.substr(0, slash)), -1);
+            }
+        }
+        auto byName = [](const std::pair<std::wstring, int>& a, const std::pair<std::wstring, int>& b) {
+            return dpk::ToLowerAscii(dpk::WideToUtf8(a.first)) < dpk::ToLowerAscii(dpk::WideToUtf8(b.first));
+        };
+        // 文件夹去重（同名子目录只显示一次）
+        std::sort(folderRows.begin(), folderRows.end(), byName);
+        folderRows.erase(std::unique(folderRows.begin(), folderRows.end(),
+                                     [](const std::pair<std::wstring, int>& a, const std::pair<std::wstring, int>& b) {
+                                         return a.first == b.first;
+                                     }),
+                         folderRows.end());
+        std::sort(fileRows.begin(), fileRows.end(), byName);
+
+        if (!m_curFolder.empty()) {
+            ListRow row;
+            row.isParent = true;
+            m_view.push_back(row);
+        }
+        for (const auto& f : folderRows) {
+            ListRow row;
+            row.name = f.first;
+            m_view.push_back(row);
+        }
+        for (const auto& f : fileRows) {
+            ListRow row;
+            row.entryIdx = f.second;
+            row.name = f.first;
+            m_view.push_back(row);
+        }
+    } else {
+        // 平铺视图：全路径列表，筛选按路径子串
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (!filterU8.empty()) {
+                const std::string lower = dpk::ToLowerAscii(entries[i].pathUtf8);
+                if (lower.find(filterU8) == std::string::npos) continue;
+            }
+            ListRow row;
+            row.entryIdx = (int)i;
+            m_view.push_back(row);
+        }
     }
     m_list.SetItemCountEx((int)m_view.size(), LVSICF_NOSCROLL);
 
     m_ignoreSel = false;
     CString status;
-    status.Format(L"条目 %u 条，当前显示 %zu 条。", (unsigned)entries.size(), m_view.size());
+    if (m_folderMode) {
+        const size_t nFolders =
+            std::count_if(m_view.begin(), m_view.end(), [](const ListRow& r) { return r.entryIdx < 0 && !r.isParent; });
+        const size_t nFiles =
+            std::count_if(m_view.begin(), m_view.end(), [](const ListRow& r) { return r.entryIdx >= 0; });
+        status.Format(L"文件夹: %s | 子文件夹 %zu 个，文件 %zu 条（共 %u 条目）。筛选可全包搜索，双击文件夹进入。",
+                      m_curFolder.empty() ? L"（根目录）" : (LPCTSTR)m_curFolder.c_str(), nFolders, nFiles,
+                      (unsigned)entries.size());
+    } else {
+        status.Format(L"条目 %u 条，当前显示 %zu 条。", (unsigned)entries.size(), m_view.size());
+    }
     SetStatus(status);
 }
 
@@ -365,9 +456,7 @@ void CMainFrame::OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult) {
         *pResult = 0;
         return;
     }
-    const size_t entryIdx = (size_t)m_view[row];
-    const dpk::Entry& entry = m_reader.Entries()[entryIdx];
-    EntryMeta& meta = m_meta[entryIdx];
+    const ListRow& listRow = m_view[(size_t)row];
     const int sub = pItem->iSubItem;
 
     auto SetText = [&](const CString& s) {
@@ -379,9 +468,27 @@ void CMainFrame::OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult) {
         }
     };
 
+    // 伪行（返回上层 / 文件夹）：只有名称列有内容
+    if (listRow.entryIdx < 0) {
+        if (sub == 0) {
+            SetText(listRow.isParent ? CString(L"..（返回上层）")
+                                     : CString(L"[") + listRow.name.c_str() + CString(L"]"));
+        }
+        *pResult = 0;
+        return;
+    }
+
+    const size_t entryIdx = (size_t)listRow.entryIdx;
+    const dpk::Entry& entry = m_reader.Entries()[entryIdx];
+    EntryMeta& meta = m_meta[entryIdx];
+
     switch (sub) {
-        case 0:  // 条目路径
-            SetText(W(entry.pathUtf8));
+        case 0:  // 条目路径（文件夹收纳视图只显示文件名）
+            if (m_folderMode && !listRow.name.empty()) {
+                SetText(CString(listRow.name.c_str()));
+            } else {
+                SetText(W(entry.pathUtf8));
+            }
             break;
         case 1: {  // 根块
             CString buf;
@@ -445,6 +552,34 @@ void CMainFrame::OnFilterChanged() {
     }
 }
 
+void CMainFrame::OnFolderViewChanged() {
+    if (m_busy) return;
+    m_folderMode = m_chkFolder.GetCheck() == BST_CHECKED;
+    if (!m_folderMode) m_curFolder.clear();
+    if (m_reader.IsOpen() && m_reader.EntriesLoaded()) {
+        RefreshList();
+    }
+}
+
+void CMainFrame::OnListDblClk(NMHDR* pNMHDR, LRESULT* pResult) {
+    const NMITEMACTIVATE* info = reinterpret_cast<const NMITEMACTIVATE*>(pNMHDR);
+    *pResult = 0;
+    if (!m_folderMode) return;  // 平铺模式双击无操作
+    const int row = info ? info->iItem : -1;
+    if (row < 0 || row >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)row];
+    if (listRow.isParent) {
+        // 返回上层：去掉最后一级
+        const size_t slash = m_curFolder.rfind(L'/');
+        m_curFolder = slash == std::wstring::npos ? std::wstring() : m_curFolder.substr(0, slash);
+        RefreshList();
+    } else if (listRow.entryIdx < 0) {
+        // 进入子文件夹
+        m_curFolder = m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name;
+        RefreshList();
+    }
+}
+
 void CMainFrame::OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult) {
     LPNMLISTVIEW info = reinterpret_cast<LPNMLISTVIEW>(pNMHDR);
     if (!m_ignoreSel && (info->uChanged & LVIF_STATE) != 0 && (info->uNewState & LVIS_SELECTED) != 0) {
@@ -458,7 +593,36 @@ void CMainFrame::ShowDetail(int row) {
         m_detail.SetWindowText(L"");
         return;
     }
-    const size_t idx = (size_t)m_view[row];
+    const ListRow& listRow = m_view[(size_t)row];
+
+    // 伪行：返回上层 / 文件夹概况
+    if (listRow.entryIdx < 0) {
+        if (listRow.isParent) {
+            m_detail.SetWindowText(L".. 返回上层文件夹（双击或双击列表行进入）。");
+            return;
+        }
+        const std::string prefix = dpk::WideToUtf8(m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name) + "/";
+        size_t nFiles = 0;
+        size_t nSub = 0;
+        std::set<std::string> subNames;
+        for (const dpk::Entry& e : m_reader.Entries()) {
+            if (e.pathUtf8.compare(0, prefix.size(), prefix) != 0) continue;
+            ++nFiles;
+            const std::string rest = e.pathUtf8.substr(prefix.size());
+            const size_t slash = rest.find('/');
+            if (slash != std::string::npos) subNames.insert(rest.substr(0, slash));
+        }
+        nSub = subNames.size();
+        CString text;
+        text.Format(L"文件夹: %s\r\n路径: %s\r\n子文件夹 %zu 个，包内文件 %zu 条。\r\n双击进入。",
+                    (LPCTSTR)listRow.name.c_str(),
+                    (LPCTSTR)CString((m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name).c_str()),
+                    nSub, nFiles);
+        m_detail.SetWindowText(text);
+        return;
+    }
+
+    const size_t idx = (size_t)listRow.entryIdx;
     const dpk::Entry& entry = m_reader.Entries()[idx];
     EntryMeta& meta = m_meta[idx];
 
@@ -637,6 +801,8 @@ void CMainFrame::OnUsage() {
     text += L"1. 浏览：点「打开包…」选择 .dpk；列表显示条目路径、根块号、块链长度、明文/存储大小、"
             L"压缩与加密标志；选中条目后在下方查看头部字段、MD5 校验结果与内容预览；"
             L"顶部「筛选」按路径子串即时过滤。\r\n";
+    text += L"   「文件夹收纳」（默认开）以文件夹方式浏览：列表按子文件夹 + 文件分组，"
+            L"双击文件夹进入、双击首行「..（返回上层）」返回；取消勾选则恢复全路径平铺列表。\r\n";
     text += L"2. 解包：点「解包到目录…」选择输出目录，逐条导出并校验 MD5；"
             L"单条失败不影响其余条目；进度中按 Esc 可取消。\r\n";
     text += L"3. 生成：点「生成 DPK 包…」选择源文件夹与输出路径，按勾选项决定压缩（zlib level 9）与加密"

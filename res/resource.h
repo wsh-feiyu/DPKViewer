@@ -51,6 +51,7 @@
 #define IDC_DIFF_TEXT_A 1035
 #define IDC_DIFF_TEXT_B 1036
 #define IDC_DIFF_STATUS 1037
+#define IDC_CHK_FOLDER 1038
 #define IDC_CMP_SIZELIMIT 1031
 
 // menu commands
