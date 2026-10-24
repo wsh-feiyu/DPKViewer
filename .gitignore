@@ -21,7 +21,9 @@ obj/
 
 # 测试工作目录
 tests/work/
-tests/tools/__pycache__/
+__pycache__/
+*.pyc
+*.pyo
 
 # 系统文件
 Thumbs.db
