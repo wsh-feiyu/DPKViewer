@@ -2,92 +2,64 @@ name: Build & Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build ${{ matrix.platform }}
-    runs-on: windows-latest
+    name: Build ${{ matrix.out_platform }}
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: x86
-            vs_platform: x86
-          - platform: x64
-            vs_platform: x64
+          # solution 层 Platform 是 x86/x64，vcxproj 层 $(Platform) 解析成 Win32/x64
+          # 所以 MSBuild 参数 vs_platform=x86，产物目录 out_platform=Win32
+          - vs_platform: x86
+            out_platform: Win32
+          - vs_platform: x64
+            out_platform: x64
 
     steps:
       - uses: actions/checkout@v5
 
-      # windows-latest 预装 VS Enterprise，但 MFC 组件默认不装
-      # setup.exe 是 VS 全局安装器，固定位置：
-      #   ${ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe
-      - name: Install MFC component
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
+      # windows-2022 预装 VS 2022 + MFC，直接 setup-msbuild 拿路径
+      - uses: microsoft/setup-msbuild@v2
 
-          # 全局 setup.exe（跟 VS 版本无关，所有 VS 共用）
-          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
-          if (-not (Test-Path $setup)) { throw "setup.exe 未找到: $setup" }
-          Write-Host "setup.exe: $setup"
-
-          # 先列出当前装了哪些组件，便于调试
-          & $setup list --products * 2>&1 | Select-String -Pattern "ATLMFC|VC\.ATL|InstallPath" | Out-String | Write-Host
-
-          # modify 给"所有已安装的 VS"加 MFC 组件（--installPath "" 不指定就是 modify 全部）
-          & $setup modify --quiet --norestart `
-            --add Microsoft.VisualStudio.Component.VC.ATLMFC `
-            --add Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre `
-            --wait
-          Write-Host "setup exit code: $LASTEXITCODE"
-          # exit code 0/3010=OK 需要重启；3006=组件已装
-          if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3006 -and $LASTEXITCODE -ne 3010) {
-            throw "setup modify failed (exit=$LASTEXITCODE)"
-          }
-          Write-Host "MFC install OK (exit=$LASTEXITCODE)"
-
-      - name: Locate MSBuild (with MFC)
-        id: locate
+      - name: Verify MFC installed
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          # 必须 -requires ATLMFC 确认装好
-          $msbuild = & $vswhere -latest -products * `
+          $path = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.ATLMFC `
-            -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
-          if (-not $msbuild) { throw "没找到带 MFC 的 MSBuild" }
-          Write-Host "MSBuild: $msbuild"
-          "msbuild=$msbuild" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+            -property installationPath
+          if (-not $path) { throw "MFC 组件未安装" }
+          Write-Host "MFC OK at: $path"
 
-      - name: Build ${{ matrix.platform }} Release
+      - name: Build Release ${{ matrix.vs_platform }}
         shell: pwsh
         run: |
-          & "${{ steps.locate.outputs.msbuild }}" DPKViewer.sln `
-            /t:Build /p:Configuration=Release `
+          msbuild DPKViewer.sln `
+            /p:Configuration=Release `
             /p:Platform=${{ matrix.vs_platform }} `
-            /p:DeployOnBuild=false /nologo /v:minimal
+            /m /verbosity:minimal
           if ($LASTEXITCODE -ne 0) { throw "MSBuild failed" }
 
+      # OutDir 在 vcxproj 里是 build\$(Platform)\Release\，
+      # $(Platform) 在 vcxproj 层解析成 Win32/x64
       - name: Collect artifact
         shell: pwsh
         run: |
-          $src = "build\${{ matrix.platform }}\Release\DPKViewer.exe"
-          if (-not (Test-Path $src)) {
-            Get-ChildItem -Recurse build -Filter *.exe -ErrorAction SilentlyContinue
-            throw "未找到 $src"
-          }
-          Copy-Item $src "DPKViewer-${{ matrix.platform }}.exe" -Force
-          Get-Item "DPKViewer-${{ matrix.platform }}.exe" | Select-Object Name, Length
+          $src = "build\${{ matrix.out_platform }}\Release\DPKViewer.exe"
+          if (-not (Test-Path $src)) { throw "未找到 $src" }
+          Copy-Item $src "DPKViewer-${{ matrix.out_platform }}.exe" -Force
+          Get-Item "DPKViewer-${{ matrix.out_platform }}.exe" | Select-Object Name, Length
 
-      - name: Upload ${{ matrix.platform }} exe
+      - name: Upload ${{ matrix.out_platform }}
         uses: actions/upload-artifact@v5
         with:
-          name: DPKViewer-${{ matrix.platform }}
-          path: DPKViewer-${{ matrix.platform }}.exe
+          name: DPKViewer-${{ matrix.out_platform }}
+          path: DPKViewer-${{ matrix.out_platform }}.exe
           retention-days: 30
 
   release:
