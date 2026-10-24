@@ -33,6 +33,9 @@ public:
 
     // 读取块链（虚拟文件原始字节）
     bool ReadVirtualFile(uint32_t rootBlock, std::vector<uint8_t>& out, std::string& err) const;
+    // 只读取根块前 1KB，跳过 32 字节块头后把 whsc 流头交给 PeekHeader
+    // 零块链遍历，O(1) 次 I/O，专供列表页快速预览头字段
+    bool PeekRootBlock(uint32_t rootBlock, std::vector<uint8_t>& out, std::string& err) const;
     // 统计块链条数
     bool CountChain(uint32_t rootBlock, uint32_t& blocks, std::string& err) const;
 

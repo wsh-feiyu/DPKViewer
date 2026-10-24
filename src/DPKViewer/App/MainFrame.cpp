@@ -89,6 +89,7 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_BN_CLICKED(IDC_BTN_ABOUT, &CMainFrame::OnAbout)
     ON_EN_CHANGE(IDC_EDIT_FILTER, &CMainFrame::OnFilterChanged)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_ENTRY_LIST, &CMainFrame::OnEntryChanged)
+    ON_NOTIFY(LVN_GETDISPINFO, IDC_ENTRY_LIST, &CMainFrame::OnGetdispinfo)
 END_MESSAGE_MAP()
 
 CMainFrame::CMainFrame() {}
@@ -125,7 +126,8 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     m_chkCompress.SetCheck(BST_CHECKED);
     m_chkEncrypt.SetCheck(BST_CHECKED);
 
-    m_list.Create(WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
+    m_list.Create(WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER |
+                      LVS_OWNERDATA,
                   CRect(0, 0, 10, 10), this, IDC_ENTRY_LIST);
     m_list.SetExtendedStyle(m_list.GetExtendedStyle() | LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
     m_list.InsertColumn(0, L"条目路径", LVCFMT_LEFT, 360);
@@ -289,7 +291,9 @@ bool CMainFrame::OpenPackage(const std::wstring& path) {
         MessageBox(W("打开包失败: " + err), L"DPKViewer", MB_ICONWARNING);
         return false;
     }
-    if (!m_reader.LoadEntries(err)) {
+    // computeBlockCounts=false：块数是 O(条目数 × 平均块数) 的遍历，大包要几分钟
+    // 列表页先不显示块数，选中条目时 ShowDetail 里按需 CountChain
+    if (!m_reader.LoadEntries(err, false)) {
         MessageBox(W("解析包目录失败: " + err), L"DPKViewer", MB_ICONWARNING);
         m_reader.Close();
         return false;
@@ -323,45 +327,109 @@ void CMainFrame::RefreshList() {
     m_edtFilter.GetWindowText(filter);
     const std::string filterU8 = dpk::ToLowerAscii(dpk::WideToUtf8(std::wstring(filter)));
 
-    int row = 0;
+    // 只构建过滤后的下标映射，不做任何 I/O
+    // LVS_OWNERDATA 虚拟列表：SetItemCountEx 后由 LVN_GETDISPINFO 按需填充
     for (size_t i = 0; i < entries.size(); ++i) {
         if (!filterU8.empty()) {
             const std::string lower = dpk::ToLowerAscii(entries[i].pathUtf8);
             if (lower.find(filterU8) == std::string::npos) continue;
         }
-        EntryMeta& meta = m_meta[i];
-        std::vector<uint8_t> stream;
-        std::string err;
-        if (m_reader.ReadVirtualFile(entries[i].rootBlock, stream, err) &&
-            dpk::WhscPeekHeader(stream, meta.info, err)) {
-            meta.headerOk = true;
-        } else {
-            meta.err = err;
-        }
-        const int item = m_list.InsertItem(row, W(entries[i].pathUtf8));
-        CString buf;
-        buf.Format(L"%u", entries[i].rootBlock);
-        m_list.SetItemText(item, 1, buf);
-        buf.Format(L"%u", entries[i].blockCount);
-        m_list.SetItemText(item, 2, buf);
-        if (meta.headerOk) {
-            m_list.SetItemText(item, 3, BytesText(meta.info.plainSize));
-            m_list.SetItemText(item, 4, BytesText(meta.info.storedSize));
-            m_list.SetItemText(item, 5, FlagsText(meta.info));
-            m_list.SetItemText(item, 6, L"未校验");
-        } else {
-            m_list.SetItemText(item, 3, L"—");
-            m_list.SetItemText(item, 4, L"—");
-            m_list.SetItemText(item, 5, L"头部损坏");
-            m_list.SetItemText(item, 6, L"失败");
-        }
         m_view.push_back((int)i);
-        ++row;
     }
+    m_list.SetItemCountEx((int)m_view.size(), LVSICF_NOSCROLL);
+
     m_ignoreSel = false;
     CString status;
-    status.Format(L"条目 %u 条，当前显示 %d 条。", (unsigned)entries.size(), row);
+    status.Format(L"条目 %u 条，当前显示 %zu 条。", (unsigned)entries.size(), m_view.size());
     SetStatus(status);
+}
+
+// 虚拟列表回调：系统需要某行某列显示什么文字时才会进来
+// 每行进来一次，PeekRootBlock 懒做 + 结果缓存到 m_meta，滚动回来不重读
+void CMainFrame::OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult) {
+    NMLVDISPINFO* pdi = (NMLVDISPINFO*)pNMHDR;
+    LVITEM* pItem = &pdi->item;
+    if (!(pItem->mask & LVIF_TEXT)) {
+        *pResult = 0;
+        return;
+    }
+
+    const int row = pItem->iItem;
+    if (row < 0 || row >= (int)m_view.size()) {
+        *pResult = 0;
+        return;
+    }
+    const size_t entryIdx = (size_t)m_view[row];
+    const dpk::Entry& entry = m_reader.Entries()[entryIdx];
+    EntryMeta& meta = m_meta[entryIdx];
+    const int sub = pItem->iSubItem;
+
+    auto SetText = [&](const CString& s) {
+        // 虚拟列表里 LVIF_TEXT 需要把字符串拷到系统缓冲区，不能直接给指针
+        if (pItem->cchTextMax > 0 && s.GetLength() < pItem->cchTextMax) {
+            _tcsncpy_s(pItem->pszText, pItem->cchTextMax, s, _TRUNCATE);
+        } else {
+            _tcsncpy_s(pItem->pszText, pItem->cchTextMax, s, _TRUNCATE);
+        }
+    };
+
+    switch (sub) {
+        case 0:  // 条目路径
+            SetText(W(entry.pathUtf8));
+            break;
+        case 1: {  // 根块
+            CString buf;
+            buf.Format(L"%u", entry.rootBlock);
+            SetText(buf);
+            break;
+        }
+        case 2: {  // 块数
+            CString buf;
+            if (entry.blockCount > 0) {
+                buf.Format(L"%u", entry.blockCount);
+            } else {
+                buf = L"-";
+            }
+            SetText(buf);
+            break;
+        }
+        default: {
+            // 明文、存储、标志、校验 —— 需要 whsc 头信息，懒做 PeekRootBlock
+            if (!meta.headerOk && meta.err.empty()) {
+                std::vector<uint8_t> stream;
+                std::string err;
+                if (m_reader.PeekRootBlock(entry.rootBlock, stream, err) &&
+                    dpk::WhscPeekHeader(stream, meta.info, err)) {
+                    meta.headerOk = true;
+                } else {
+                    meta.err = err;
+                }
+            }
+            CString buf;
+            if (meta.headerOk) {
+                switch (sub) {
+                    case 3: buf = BytesText(meta.info.plainSize); break;
+                    case 4: buf = BytesText(meta.info.storedSize); break;
+                    case 5: buf = FlagsText(meta.info); break;
+                    case 6:
+                        if (meta.verifyState == 1) buf = L"MD5 OK";
+                        else if (meta.verifyState == 0) buf = L"失败";
+                        else buf = L"未校验";
+                        break;
+                }
+            } else {
+                switch (sub) {
+                    case 3: buf = L"—"; break;
+                    case 4: buf = L"—"; break;
+                    case 5: buf = L"头部损坏"; break;
+                    case 6: buf = L"失败"; break;
+                }
+            }
+            SetText(buf);
+            break;
+        }
+    }
+    *pResult = 0;
 }
 
 void CMainFrame::OnFilterChanged() {
@@ -386,7 +454,7 @@ void CMainFrame::ShowDetail(int row) {
     }
     const size_t idx = (size_t)m_view[row];
     const dpk::Entry& entry = m_reader.Entries()[idx];
-    const EntryMeta& meta = m_meta[idx];
+    EntryMeta& meta = m_meta[idx];
 
     CString text;
     text += L"路径: " + W(entry.pathUtf8) + L"\r\n";
@@ -404,13 +472,20 @@ void CMainFrame::ShowDetail(int row) {
     dpk::WhscInfo info;
     std::string err;
     const bool readOk = m_reader.ReadEntry(entry, plain, info, err);
+    // 校验状态写回 meta，让虚拟列表下一帧重新渲染第 6 列
     if (readOk) {
-        text.AppendFormat(L"校验: MD5 一致，解出明文 %s\r\n", (LPCTSTR)BytesText(plain.size()));
+        meta.verifyState = info.md5Ok ? 1 : 0;
+        text.AppendFormat(L"校验: %s，解出明文 %s\r\n", info.md5Ok ? L"MD5 一致" : L"MD5 不匹配",
+                          (LPCTSTR)BytesText(plain.size()));
     } else {
+        meta.verifyState = 0;
         text += L"内容: 读取失败 - " + W(err) + L"\r\n";
     }
     m_ignoreSel = true;
-    m_list.SetItemText(row, 6, readOk ? L"MD5 OK" : L"失败");
+    // 虚拟列表里 SetItem 不走，直接让该行所在区域重绘即可（控件会重新调 LVN_GETDISPINFO）
+    CRect rc;
+    m_list.GetItemRect(row, &rc, LVIR_BOUNDS);
+    m_list.InvalidateRect(&rc);
     m_ignoreSel = false;
 
     text += L"---- 内容预览 ----\r\n";

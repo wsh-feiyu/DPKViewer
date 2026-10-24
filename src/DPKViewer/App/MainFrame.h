@@ -29,6 +29,7 @@ protected:
     afx_msg void OnAppExit();
     afx_msg void OnFilterChanged();
     afx_msg void OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg void OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult);
     DECLARE_MESSAGE_MAP()
 
 private:
@@ -36,6 +37,8 @@ private:
         dpk::WhscInfo info;
         bool headerOk = false;
         std::string err;
+        // 校验结果：-1 未校验 / 0 校验失败 / 1 校验通过
+        int verifyState = -1;
     };
 
     void Layout();

@@ -160,6 +160,26 @@ bool Reader::ReadVirtualFile(uint32_t rootBlock, std::vector<uint8_t>& out, std:
     return true;
 }
 
+// 只读根块 1KB，提取 whsc 流起始部分（跳过 32 字节根块头）
+// 不遍历块链，专供列表页快速 peek 头字段
+bool Reader::PeekRootBlock(uint32_t rootBlock, std::vector<uint8_t>& out, std::string& err) const {
+    out.clear();
+    const uint32_t totalBlocks = TotalBlocks();
+    if (rootBlock >= totalBlocks) {
+        err = "块号越界";
+        return false;
+    }
+    std::vector<uint8_t> root;
+    if (!ReadAt((uint64_t)rootBlock * kBlockSize, kBlockSize, root, err)) return false;
+    if (ReadU32(&root[0]) != 0) {
+        err = "块 " + std::to_string(rootBlock) + " 不是根块";
+        return false;
+    }
+    // 根块：32 字节块头 + 992 字节流起始；把后者喂给 WhscPeekHeader
+    out.assign(root.begin() + 32, root.end());
+    return true;
+}
+
 bool Reader::CountChain(uint32_t rootBlock, uint32_t& blocks, std::string& err) const {
     blocks = 0;
     const uint32_t totalBlocks = TotalBlocks();

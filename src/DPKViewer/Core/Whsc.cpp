@@ -52,10 +52,8 @@ bool WhscPeekHeader(const std::vector<uint8_t>& stream, WhscInfo& info, std::str
     info.compressed = (info.flags & 0x01) != 0;
     info.encrypted = (info.flags & 0x02) != 0;
     info.contentPassword = (info.flags & 0x04) != 0;
-    if ((uint64_t)48 + info.storedSize > stream.size()) {
-        err = "whsc 流负载长度越界";
-        return false;
-    }
+    // 注意：这里不再校验 48 + storedSize <= stream.size()
+    // PeekHeader 职责仅为解析头字段，负载长度完整性由 WhscDecode 负责
     return true;
 }
 
