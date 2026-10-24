@@ -34,6 +34,9 @@ protected:
     afx_msg void OnFolderViewChanged();
     afx_msg void OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnListDblClk(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg void OnListRightClick(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg void OnCtxExportFile();
+    afx_msg void OnCtxExportFolder();
     afx_msg void OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg LRESULT OnCompareClosed(WPARAM wParam, LPARAM lParam);
     DECLARE_MESSAGE_MAP()
@@ -88,4 +91,5 @@ private:
     bool m_ignoreSel = false;
     bool m_busy = false;
     bool m_cancel = false;
+    int m_ctxRow = -1;  // 右键菜单对应的列表行
 };

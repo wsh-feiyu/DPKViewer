@@ -98,6 +98,9 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_BN_CLICKED(IDC_CHK_FOLDER, &CMainFrame::OnFolderViewChanged)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_ENTRY_LIST, &CMainFrame::OnEntryChanged)
     ON_NOTIFY(NM_DBLCLK, IDC_ENTRY_LIST, &CMainFrame::OnListDblClk)
+    ON_NOTIFY(NM_RCLICK, IDC_ENTRY_LIST, &CMainFrame::OnListRightClick)
+    ON_COMMAND(ID_CTX_EXPORT_FILE, &CMainFrame::OnCtxExportFile)
+    ON_COMMAND(ID_CTX_EXPORT_FOLDER, &CMainFrame::OnCtxExportFolder)
     ON_NOTIFY(LVN_GETDISPINFO, IDC_ENTRY_LIST, &CMainFrame::OnGetdispinfo)
     ON_MESSAGE(kWMCompareClosed, &CMainFrame::OnCompareClosed)
 END_MESSAGE_MAP()
@@ -443,6 +446,119 @@ void CMainFrame::RefreshList() {
 
 // 虚拟列表回调：系统需要某行某列显示什么文字时才会进来
 // 每行进来一次，PeekRootBlock 懒做 + 结果缓存到 m_meta，滚动回来不重读
+void CMainFrame::OnListRightClick(NMHDR* pNMHDR, LRESULT* pResult) {
+    *pResult = 0;
+    if (!m_reader.IsOpen() || !m_reader.EntriesLoaded()) return;
+
+    // 光标位置命中测试，拿到右键所在的行
+    CPoint pt;
+    ::GetCursorPos(&pt);
+    CPoint local = pt;
+    m_list.ScreenToClient(&local);
+    const int row = m_list.HitTest(local);
+    if (row < 0 || row >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)row];
+    if (listRow.isParent) return;  // 「..」行不提供菜单
+
+    // 选中该行（右键默认不改选中态），同时触发明细显示
+    m_ignoreSel = true;
+    m_list.SetItemState(row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    m_ignoreSel = false;
+    ShowDetail(row);
+    m_ctxRow = row;
+
+    const HMENU menu = ::CreatePopupMenu();
+    if (listRow.entryIdx >= 0) {
+        ::AppendMenu(menu, MF_STRING, ID_CTX_EXPORT_FILE, L"导出文件(&E)…");
+    } else {
+        ::AppendMenu(menu, MF_STRING, ID_CTX_EXPORT_FOLDER, L"导出文件夹(&D)…");
+    }
+    ::TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hWnd, nullptr);
+    ::DestroyMenu(menu);
+}
+
+void CMainFrame::OnCtxExportFile() {
+    if (m_busy || m_ctxRow < 0 || m_ctxRow >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)m_ctxRow];
+    if (listRow.entryIdx < 0) return;
+    const dpk::Entry& entry = m_reader.Entries()[(size_t)listRow.entryIdx];
+
+    // 默认文件名取条目自身的文件名
+    const std::wstring full = dpk::Utf8ToWide(entry.pathUtf8);
+    const std::wstring defName = dpk::FileNameOf(full);
+    CFileDialog dlg(FALSE, nullptr, defName.c_str(), OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY,
+                    L"所有文件 (*.*)|*.*||", this);
+    dlg.m_ofn.lpstrTitle = L"导出文件到";
+    if (dlg.DoModal() != IDOK) return;
+
+    BusyGuard guard(m_busy);
+    m_cancel = false;
+    std::string err;
+    if (m_reader.ExtractEntry(entry, std::wstring(dlg.GetPathName()), err)) {
+        SetStatus(L"已导出: " + CString(dlg.GetPathName()));
+        MessageBox(L"导出成功。\r\n" + CString(dlg.GetPathName()), L"DPKViewer - 导出文件", MB_ICONINFORMATION);
+    } else {
+        SetStatus(W("导出失败: " + err));
+        MessageBox(W("导出失败: " + err), L"DPKViewer - 导出文件", MB_ICONWARNING);
+    }
+}
+
+void CMainFrame::OnCtxExportFolder() {
+    if (m_busy || m_ctxRow < 0 || m_ctxRow >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)m_ctxRow];
+    if (listRow.entryIdx >= 0) return;
+    const std::wstring folder =
+        m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name;
+    const std::string prefix = dpk::WideToUtf8(folder) + "/";
+
+    std::wstring outDir;
+    if (!app::PickFolder(m_hWnd, L"选择文件夹导出目录", outDir)) return;
+
+    BusyGuard guard(m_busy);
+    m_cancel = false;
+    m_progress.SetPos(0);
+    int okCount = 0;
+    int failCount = 0;
+    std::vector<CString> failures;
+    const std::vector<dpk::Entry>& entries = m_reader.Entries();
+    size_t total = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].pathUtf8.compare(0, prefix.size(), prefix) == 0) ++total;
+    }
+    size_t done = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const dpk::Entry& e = entries[i];
+        if (e.pathUtf8.compare(0, prefix.size(), prefix) != 0) continue;
+        ++done;
+        if (!ProgressTick(dpk::Utf8ToWide(e.pathUtf8), total ? (int)(done * 100 / total) : 100)) break;
+        std::string eerr;
+        if (!dpk::IsSafeRelativePath(e.pathUtf8)) {
+            ++failCount;
+            if (failures.size() < 20) failures.push_back(W(e.pathUtf8) + L" - 路径不安全，已跳过");
+            continue;
+        }
+        const std::wstring rel = dpk::RepoRelativeToWin(dpk::Utf8ToWide(e.pathUtf8));
+        if (m_reader.ExtractEntry(e, dpk::JoinPath(outDir, rel), eerr)) {
+            ++okCount;
+        } else {
+            ++failCount;
+            if (failures.size() < 20) failures.push_back(W(e.pathUtf8) + L" - " + W(eerr));
+        }
+    }
+    m_progress.SetPos(100);
+
+    CString summary;
+    summary.Format(L"导出文件夹 %s %s：成功 %d 条，失败 %d 条。\r\n输出目录: %s",
+                   (LPCTSTR)CString(folder.c_str()), m_cancel ? L"（已取消）" : L"完成", okCount, failCount,
+                   (LPCTSTR)CString(outDir.c_str()));
+    for (size_t i = 0; i < failures.size(); ++i) summary += L"\r\n  " + failures[i];
+    CString done2;
+    done2.Format(L"文件夹导出%s：成功 %d 条，失败 %d 条 -> %s", m_cancel ? L"已取消" : L"完成", okCount, failCount,
+                 (LPCTSTR)CString(outDir.c_str()));
+    SetStatus(done2);
+    MessageBox(summary, L"DPKViewer - 导出文件夹", failCount ? MB_ICONWARNING : MB_ICONINFORMATION);
+}
+
 void CMainFrame::OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult) {
     NMLVDISPINFO* pdi = (NMLVDISPINFO*)pNMHDR;
     LVITEM* pItem = &pdi->item;
@@ -802,7 +918,8 @@ void CMainFrame::OnUsage() {
             L"压缩与加密标志；选中条目后在下方查看头部字段、MD5 校验结果与内容预览；"
             L"顶部「筛选」按路径子串即时过滤。\r\n";
     text += L"   「文件夹收纳」（默认开）以文件夹方式浏览：列表按子文件夹 + 文件分组，"
-            L"双击文件夹进入、双击首行「..（返回上层）」返回；取消勾选则恢复全路径平铺列表。\r\n";
+            L"双击文件夹进入、双击首行「..（返回上层）」返回；取消勾选则恢复全路径平铺列表；"
+            L"右键文件或文件夹可单独「导出文件」/「导出文件夹」。\r\n";
     text += L"2. 解包：点「解包到目录…」选择输出目录，逐条导出并校验 MD5；"
             L"单条失败不影响其余条目；进度中按 Esc 可取消。\r\n";
     text += L"3. 生成：点「生成 DPK 包…」选择源文件夹与输出路径，按勾选项决定压缩（zlib level 9）与加密"

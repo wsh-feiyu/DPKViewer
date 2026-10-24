@@ -60,6 +60,8 @@
 #define ID_APP_PACK 32773
 #define ID_APP_USAGE 32774
 #define ID_APP_COMPARE 32776
+#define ID_CTX_EXPORT_FILE 32777   // 右键菜单：导出单个文件条目
+#define ID_CTX_EXPORT_FOLDER 32778 // 右键菜单：导出文件夹（递归）
 // ID_APP_ABOUT / ID_APP_EXIT are provided by MFC's afxres.h (0xE140 / 0xE141);
 // the definitions below are only a fallback when afxres.h is not included.
 #ifndef ID_APP_ABOUT
