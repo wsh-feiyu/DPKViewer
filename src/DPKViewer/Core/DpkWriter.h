@@ -72,4 +72,12 @@ bool LoadTemplateHeader(const std::wstring& templateDpkPath, std::vector<uint8_t
 // 读取模板布局（各条目原块位置 + tree/names 链 + 总块数），用于按原包结构回填
 bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err);
 
+// 原位补丁：把 data 写入包内 pathUtf8（同名替换 / 不存在则新增），其余条目字节不动。
+// 大包友好：不缓存整包内容、不解码无关条目，内存占用 ≈ 导入文件大小 + 目录树。
+// replaced 返回是否为替换；entryCount/totalBlocks 返回补丁后的条目数与总块数。
+bool PatchEntryInPackage(const std::wstring& pkgPath, const std::string& pathUtf8,
+                         const std::vector<uint8_t>& data, bool compress, bool encrypt, int level,
+                         uint32_t& entryCount, uint32_t& totalBlocksOut, bool& replaced, std::string& err,
+                         const ProgressCallback& progress = ProgressCallback());
+
 }  // namespace dpk

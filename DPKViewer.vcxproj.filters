@@ -27,6 +27,9 @@
     <ClCompile Include="src\DPKViewer\App\DpkViewerApp.cpp">
       <Filter>App</Filter>
     </ClCompile>
+    <ClCompile Include="src\DPKViewer\App\FileViewer.cpp">
+      <Filter>App</Filter>
+    </ClCompile>
     <ClCompile Include="src\DPKViewer\App\MainFrame.cpp">
       <Filter>App</Filter>
     </ClCompile>
@@ -75,6 +78,9 @@
       <Filter>App</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\App\DpkViewerApp.h">
+      <Filter>App</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DPKViewer\App\FileViewer.h">
       <Filter>App</Filter>
     </ClInclude>
     <ClInclude Include="src\DPKViewer\App\MainFrame.h">

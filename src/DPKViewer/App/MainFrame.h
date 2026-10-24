@@ -35,8 +35,10 @@ protected:
     afx_msg void OnEntryChanged(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnListDblClk(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg void OnListRightClick(NMHDR* pNMHDR, LRESULT* pResult);
+    afx_msg void OnCtxViewFile();
     afx_msg void OnCtxExportFile();
     afx_msg void OnCtxExportFolder();
+    afx_msg void OnCtxImportFile();
     afx_msg void OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult);
     afx_msg LRESULT OnCompareClosed(WPARAM wParam, LPARAM lParam);
     DECLARE_MESSAGE_MAP()
@@ -60,6 +62,7 @@ private:
     void Layout();
     void RefreshList();
     void ShowDetail(int row);
+    void ViewEntryAtRow(int row);  // 解码条目并打开查看窗口
     void SetStatus(const CString& text);
     bool OpenPackage(const std::wstring& path);
     bool ProgressTick(const std::wstring& message, int percent);

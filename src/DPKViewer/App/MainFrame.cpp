@@ -10,6 +10,7 @@
 #include "MainFrame.h"
 #include "AppUtil.h"
 #include "CompareWindow.h"
+#include "FileViewer.h"
 #include "resource.h"
 
 #include "Core/DpkReader.h"
@@ -26,7 +27,7 @@ namespace {
 const int kMargin = 8;
 const int kRowH = 26;
 const int kRowGap = 6;
-const int kDetailH = 180;
+const int kDetailH = 112;
 const int kProgressH = 16;
 const int kStatusH = 22;
 
@@ -51,20 +52,6 @@ CString FlagsText(const dpk::WhscInfo& info) {
     }
     if (s.IsEmpty()) s = L"原样";
     return s;
-}
-
-CString PreviewText(const std::vector<uint8_t>& plain, size_t maxBytes) {
-    if (plain.empty()) return L"（空文件）";
-    const size_t n = plain.size() < maxBytes ? plain.size() : maxBytes;
-    if (dpk::LooksLikeText(&plain[0], n)) {
-        std::string head(reinterpret_cast<const char*>(&plain[0]), n);
-        CString text = W(dpk::NameBytesToWide(head));
-        if (plain.size() > n) text += L"\r\n…（已截断）";
-        return text;
-    }
-    CString text = W(dpk::HexDump(&plain[0], plain.size(), maxBytes));
-    if (plain.size() > maxBytes) text += L"\r\n…（已截断）";
-    return text;
 }
 
 // 运行时把「正在执行」标志置位，避免进度泵消息时的重入
@@ -99,8 +86,10 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
     ON_NOTIFY(LVN_ITEMCHANGED, IDC_ENTRY_LIST, &CMainFrame::OnEntryChanged)
     ON_NOTIFY(NM_DBLCLK, IDC_ENTRY_LIST, &CMainFrame::OnListDblClk)
     ON_NOTIFY(NM_RCLICK, IDC_ENTRY_LIST, &CMainFrame::OnListRightClick)
+    ON_COMMAND(ID_CTX_VIEW_FILE, &CMainFrame::OnCtxViewFile)
     ON_COMMAND(ID_CTX_EXPORT_FILE, &CMainFrame::OnCtxExportFile)
     ON_COMMAND(ID_CTX_EXPORT_FOLDER, &CMainFrame::OnCtxExportFolder)
+    ON_COMMAND(ID_CTX_IMPORT_FILE, &CMainFrame::OnCtxImportFile)
     ON_NOTIFY(LVN_GETDISPINFO, IDC_ENTRY_LIST, &CMainFrame::OnGetdispinfo)
     ON_MESSAGE(kWMCompareClosed, &CMainFrame::OnCompareClosed)
 END_MESSAGE_MAP()
@@ -469,12 +458,54 @@ void CMainFrame::OnListRightClick(NMHDR* pNMHDR, LRESULT* pResult) {
 
     const HMENU menu = ::CreatePopupMenu();
     if (listRow.entryIdx >= 0) {
+        ::AppendMenu(menu, MF_STRING, ID_CTX_VIEW_FILE, L"查看(&V)…");
+        ::AppendMenu(menu, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenu(menu, MF_STRING, ID_CTX_IMPORT_FILE, L"导入文件到此处(&I)…");
         ::AppendMenu(menu, MF_STRING, ID_CTX_EXPORT_FILE, L"导出文件(&E)…");
     } else {
+        ::AppendMenu(menu, MF_STRING, ID_CTX_IMPORT_FILE, L"导入文件到此处(&I)…");
+        ::AppendMenu(menu, MF_SEPARATOR, 0, nullptr);
         ::AppendMenu(menu, MF_STRING, ID_CTX_EXPORT_FOLDER, L"导出文件夹(&D)…");
     }
     ::TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, m_hWnd, nullptr);
     ::DestroyMenu(menu);
+}
+
+void CMainFrame::OnCtxViewFile() {
+    ViewEntryAtRow(m_ctxRow);
+}
+
+void CMainFrame::ViewEntryAtRow(int row) {
+    if (m_busy || row < 0 || row >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)row];
+    if (listRow.entryIdx < 0) return;
+    const dpk::Entry& entry = m_reader.Entries()[(size_t)listRow.entryIdx];
+
+    BusyGuard guard(m_busy);
+    m_cancel = false;
+    CWaitCursor wait;
+    std::vector<uint8_t> plain;
+    dpk::WhscInfo info;
+    std::string err;
+    if (!m_reader.ReadEntry(entry, plain, info, err)) {
+        MessageBox(W("读取失败: " + err), L"DPKViewer - 查看", MB_ICONWARNING);
+        return;
+    }
+    // 校验状态写回 meta，列表第 6 列同步刷新
+    EntryMeta& meta = m_meta[(size_t)listRow.entryIdx];
+    meta.verifyState = info.md5Ok ? 1 : 0;
+    CRect rc;
+    m_list.GetItemRect(row, &rc, LVIR_BOUNDS);
+    m_list.InvalidateRect(&rc);
+
+    CFileViewer* viewer = new CFileViewer();
+    if (!viewer->Create(plain, entry.pathUtf8)) {
+        delete viewer;
+        MessageBox(L"创建查看窗口失败。", L"DPKViewer", MB_ICONWARNING);
+        return;
+    }
+    viewer->ShowWindow(SW_SHOW);
+    viewer->UpdateWindow();
 }
 
 void CMainFrame::OnCtxExportFile() {
@@ -557,6 +588,78 @@ void CMainFrame::OnCtxExportFolder() {
                  (LPCTSTR)CString(outDir.c_str()));
     SetStatus(done2);
     MessageBox(summary, L"DPKViewer - 导出文件夹", failCount ? MB_ICONWARNING : MB_ICONINFORMATION);
+}
+
+void CMainFrame::OnCtxImportFile() {
+    if (m_busy || !m_reader.IsOpen() || !m_reader.EntriesLoaded()) return;
+    if (m_ctxRow < 0 || m_ctxRow >= (int)m_view.size()) return;
+    const ListRow& listRow = m_view[(size_t)m_ctxRow];
+
+    // 导入目标目录：文件行 -> 该文件所在目录；文件夹行 -> 该文件夹
+    std::wstring targetFolder;
+    if (listRow.entryIdx >= 0) {
+        const std::wstring full = dpk::Utf8ToWide(m_reader.Entries()[(size_t)listRow.entryIdx].pathUtf8);
+        const size_t slash = full.rfind(L'/');
+        targetFolder = slash == std::wstring::npos ? std::wstring() : full.substr(0, slash);
+    } else if (!listRow.isParent) {
+        targetFolder = m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name;
+    } else {
+        return;
+    }
+
+    CFileDialog dlg(TRUE, nullptr, nullptr, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY, L"所有文件 (*.*)|*.*||", this);
+    dlg.m_ofn.lpstrTitle = L"选择要导入的文件";
+    if (dlg.DoModal() != IDOK) return;
+    const std::wstring srcPath(dlg.GetPathName());
+    const std::wstring fileName = dpk::FileNameOf(srcPath);
+    const std::wstring relPath = targetFolder.empty() ? fileName : targetFolder + L"/" + fileName;
+    const std::string relU8 = dpk::WideToUtf8(relPath);
+    if (!dpk::IsSafeRelativePath(relU8)) {
+        MessageBox(L"导入路径不安全（含 .. 或绝对路径），已取消。", L"DPKViewer - 导入", MB_ICONWARNING);
+        return;
+    }
+
+    BusyGuard guard(m_busy);
+    m_cancel = false;
+    m_progress.SetPos(0);
+    CWaitCursor wait;
+
+    // 读入要导入的文件
+    std::vector<uint8_t> importData;
+    std::string ierr;
+    if (!dpk::ReadFileBytes(srcPath, importData, ierr)) {
+        MessageBox(W("读取导入文件失败: " + ierr), L"DPKViewer - 导入", MB_ICONWARNING);
+        return;
+    }
+
+    // 原位补丁：只改写该条目的块（同名替换时目录树都不用动），其余条目字节不动。
+    // 大包友好：不解码无关条目、不缓存整包，内存占用 ≈ 导入文件大小。
+    const std::wstring pkgPath = m_reader.Path();
+    // 先释放主窗口的只读句柄：fopen_s 打开的文件不可共享写入，写阶段需要独占 r+b
+    m_reader.Close();
+    uint32_t entryCount = 0;
+    uint32_t totalBlocks = 0;
+    bool replaced = false;
+    std::string perr;
+    const bool ok = dpk::PatchEntryInPackage(
+        pkgPath, relU8, importData, m_chkCompress.GetCheck() == BST_CHECKED,
+        m_chkEncrypt.GetCheck() == BST_CHECKED, 9, entryCount, totalBlocks, replaced, perr,
+        [this](const std::wstring& m, int p) -> bool { return ProgressTick(m, p); });
+    m_progress.SetPos(ok ? 100 : 0);
+    if (!ok) {
+        OpenPackage(pkgPath);  // 失败也要恢复浏览（包未被改动）
+        MessageBox(W("导入失败: " + perr), L"DPKViewer - 导入", MB_ICONWARNING);
+        SetStatus(m_cancel ? CString(L"导入已取消。") : W("导入失败: " + perr));
+        return;
+    }
+
+    OpenPackage(pkgPath);
+    CString summary;
+    summary.Format(L"导入%s：%s -> %s\r\n共 %u 条，总块数 %u。其余条目原样保留。\r\n包: %s",
+                   replaced ? L"（替换）" : L"（新增）", (LPCTSTR)CString(srcPath.c_str()),
+                   (LPCTSTR)CString(relPath.c_str()), entryCount, totalBlocks, (LPCTSTR)CString(pkgPath.c_str()));
+    SetStatus(summary);
+    MessageBox(summary, L"DPKViewer - 导入", MB_ICONINFORMATION);
 }
 
 void CMainFrame::OnGetdispinfo(NMHDR* pNMHDR, LRESULT* pResult) {
@@ -680,19 +783,21 @@ void CMainFrame::OnFolderViewChanged() {
 void CMainFrame::OnListDblClk(NMHDR* pNMHDR, LRESULT* pResult) {
     const NMITEMACTIVATE* info = reinterpret_cast<const NMITEMACTIVATE*>(pNMHDR);
     *pResult = 0;
-    if (!m_folderMode) return;  // 平铺模式双击无操作
     const int row = info ? info->iItem : -1;
     if (row < 0 || row >= (int)m_view.size()) return;
     const ListRow& listRow = m_view[(size_t)row];
-    if (listRow.isParent) {
+    if (m_folderMode && listRow.isParent) {
         // 返回上层：去掉最后一级
         const size_t slash = m_curFolder.rfind(L'/');
         m_curFolder = slash == std::wstring::npos ? std::wstring() : m_curFolder.substr(0, slash);
         RefreshList();
-    } else if (listRow.entryIdx < 0) {
+    } else if (m_folderMode && listRow.entryIdx < 0) {
         // 进入子文件夹
         m_curFolder = m_curFolder.empty() ? listRow.name : m_curFolder + L"/" + listRow.name;
         RefreshList();
+    } else if (listRow.entryIdx >= 0) {
+        // 双击文件：打开查看窗口
+        ViewEntryAtRow(row);
     }
 }
 
@@ -774,12 +879,6 @@ void CMainFrame::ShowDetail(int row) {
     m_list.InvalidateRect(&rc);
     m_ignoreSel = false;
 
-    text += L"---- 内容预览 ----\r\n";
-    if (readOk) {
-        text += PreviewText(plain, 2048);
-    } else {
-        text += L"内容读取失败，无法预览。";
-    }
     m_detail.SetWindowText(text);
 }
 
@@ -919,7 +1018,9 @@ void CMainFrame::OnUsage() {
             L"顶部「筛选」按路径子串即时过滤。\r\n";
     text += L"   「文件夹收纳」（默认开）以文件夹方式浏览：列表按子文件夹 + 文件分组，"
             L"双击文件夹进入、双击首行「..（返回上层）」返回；取消勾选则恢复全路径平铺列表；"
-            L"右键文件或文件夹可单独「导出文件」/「导出文件夹」。\r\n";
+            L"双击文件或右键「查看」打开查看窗口（文本直接显示，乱码或二进制自动/手动切换十六进制）；"
+            L"右键还可「导入文件到此处」（导入到选中文件所在目录，同名替换、未变条目字节级复用原包）、"
+            L"「导出文件」/「导出文件夹」。\r\n";
     text += L"2. 解包：点「解包到目录…」选择输出目录，逐条导出并校验 MD5；"
             L"单条失败不影响其余条目；进度中按 Esc 可取消。\r\n";
     text += L"3. 生成：点「生成 DPK 包…」选择源文件夹与输出路径，按勾选项决定压缩（zlib level 9）与加密"
@@ -943,7 +1044,7 @@ void CMainFrame::OnUsage() {
 
 void CMainFrame::OnAbout() {
     CString text;
-    text += L"DPKViewer v0.1.2\r\n";
+    text += L"DPKViewer v0.1.3\r\n";
     text += L"MFC（静态链接）实现的 DPK 包工具：浏览、解包、生成。\r\n\r\n";
     text += L"包格式：whpackage1.0（块大小 1024，包口令 tianxiawudi，内容口令 gandiaosifu）\r\n";
     text += L"流格式：whsc1.0（flags 位 0x01 压缩 / 0x02 加密 / 0x04 内容口令）\r\n";

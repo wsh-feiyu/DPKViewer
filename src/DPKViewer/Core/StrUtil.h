@@ -13,6 +13,8 @@ std::string WideToUtf8(const std::wstring& s);
 
 // 包内名称字节 -> 宽字符：先按 UTF-8 严格解码，失败则按系统 ANSI 代码页
 std::wstring NameBytesToWide(const std::string& bytes);
+// 检测文本编码：0 空 / 1 UTF-8 / 2 ANSI（中文系统即 GBK）/ 3 UTF-8 带 BOM
+int DetectTextEncoding(const std::string& bytes);
 // 宽字符 -> 包内名称字节：优先系统 ANSI 代码页，无法表示时使用 UTF-8
 std::string WideToNameBytes(const std::wstring& s);
 

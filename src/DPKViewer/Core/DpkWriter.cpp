@@ -216,6 +216,21 @@ bool WalkChain(const std::vector<uint8_t>& pkg, uint32_t root, std::vector<uint3
     return !out.empty();
 }
 
+// 文件版链遍历：逐块 seek 只读 8 字节头，不把整包读进内存（大包必需）
+bool WalkChainFile(FILE* fp, uint64_t fsize, uint32_t root, std::vector<uint32_t>& out) {
+    out.clear();
+    if (root == 0) return false;
+    const uint32_t total = (uint32_t)(fsize / kBlockSize);
+    uint32_t bn = root;
+    uint8_t hdr[4];
+    while (bn != 0 && bn < total && out.size() < total) {
+        out.push_back(bn);
+        if (_fseeki64(fp, (__int64)bn * kBlockSize + 4, SEEK_SET) != 0 || fread(hdr, 1, 4, fp) != 4) return false;
+        bn = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+    }
+    return !out.empty();
+}
+
 }  // namespace
 
 bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std::string& err) {
@@ -235,16 +250,20 @@ bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std
     layout.treeRoot = reader.TreeRoot();
     layout.namesRoot = reader.NamesRoot();
 
-    std::vector<uint8_t> pkg;
-    if (!ReadFileBytes(templateDpkPath, pkg, err)) {
-        err = "读取模板包失败: " + err;
+    // 逐块 seek 遍历链：不把整包读进内存（大包必需）
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, templateDpkPath.c_str(), L"rb") != 0 || fp == nullptr) {
+        err = "打开模板包失败";
         return false;
     }
-    if (!WalkChain(pkg, layout.treeRoot, layout.treeBlocks)) {
+    const uint64_t fsize = reader.FileSize();
+    if (!WalkChainFile(fp, fsize, layout.treeRoot, layout.treeBlocks)) {
+        fclose(fp);
         err = "模板包 treeRoot 块链无效";
         return false;
     }
-    if (!WalkChain(pkg, layout.namesRoot, layout.namesBlocks)) {
+    if (!WalkChainFile(fp, fsize, layout.namesRoot, layout.namesBlocks)) {
+        fclose(fp);
         err = "模板包 namesRoot 块链无效";
         return false;
     }
@@ -257,9 +276,11 @@ bool LoadPackLayout(const std::wstring& templateDpkPath, PackLayout& layout, std
         PackLayoutEntry le;
         le.rootBlock = entries[i].rootBlock;
         le.blocks = entries[i].blockCount;
-        WalkChain(pkg, entries[i].rootBlock, le.chain);
+        WalkChainFile(fp, fsize, entries[i].rootBlock, le.chain);
         layout.byPath[key] = le;
     }
+
+    fclose(fp);
 
     // 收集原包中未被任何链引用的空闲块（可复用来存放新增/变大内容，从而保持总块数不变）
     std::vector<uint8_t> used(layout.totalBlocks, 0);
@@ -614,6 +635,196 @@ bool PackFolder(const std::wstring& srcDir, const std::wstring& outPath, const P
 
 bool PackEmpty(const std::wstring& outPath, const PackOptions& opt, PackResult& result, std::string& err) {
     return PackFiles(std::vector<PackFile>(), outPath, opt, result, err, ProgressCallback());
+}
+
+namespace {
+
+// 把一条流按块链直接写入已打开的包文件（与 FillBlockChain 同构，但不占内存缓冲整包）
+bool WriteChainToFile(FILE* fp, const std::vector<uint8_t>& stream, const std::vector<uint32_t>& chain) {
+    const uint32_t total = (uint32_t)chain.size();
+    if (total == 0) return true;
+    std::vector<uint8_t> block(kBlockSize, 0);
+    WriteU32(&block[0], 0);                                    // prev = 0，根块
+    WriteU32(&block[4], total > 1 ? chain[1] : 0);             // next
+    WriteU32(&block[8], chain.back());                         // tail
+    WriteU32(&block[12], (uint32_t)stream.size());             // fileSize
+    const size_t take = stream.size() < (kBlockSize - 32) ? stream.size() : (kBlockSize - 32);
+    if (take) memcpy(&block[32], &stream[0], take);
+    if (_fseeki64(fp, (__int64)chain[0] * kBlockSize, SEEK_SET) != 0 ||
+        fwrite(&block[0], 1, kBlockSize, fp) != kBlockSize) {
+        return false;
+    }
+    size_t offset = take;
+    for (uint32_t i = 1; i < total; ++i) {
+        std::fill(block.begin(), block.end(), 0);
+        WriteU32(&block[0], chain[i - 1]);
+        WriteU32(&block[4], (i + 1 < total) ? chain[i + 1] : 0);
+        const size_t remaining = stream.size() - offset;
+        const size_t count = remaining < (kBlockSize - 8) ? remaining : (kBlockSize - 8);
+        if (count) memcpy(&block[8], &stream[offset], count);
+        offset += count;
+        if (_fseeki64(fp, (__int64)chain[i] * kBlockSize, SEEK_SET) != 0 ||
+            fwrite(&block[0], 1, kBlockSize, fp) != kBlockSize) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool PatchEntryInPackage(const std::wstring& pkgPath, const std::string& pathUtf8,
+                         const std::vector<uint8_t>& data, bool compress, bool encrypt, int level,
+                         uint32_t& entryCount, uint32_t& totalBlocksOut, bool& replaced, std::string& err,
+                         const ProgressCallback& progress) {
+    entryCount = 0;
+    totalBlocksOut = 0;
+    replaced = false;
+    if (progress && !progress(L"打开包", 0)) {
+        err = "操作已取消";
+        return false;
+    }
+
+    Reader reader;
+    if (!reader.Open(pkgPath, err)) {
+        err = "打开包失败: " + err;
+        return false;
+    }
+    if (!reader.LoadEntries(err, false)) {
+        err = "解析目录失败: " + err;
+        return false;
+    }
+    PackLayout layout;
+    if (!LoadPackLayout(pkgPath, layout, err)) return false;
+    // 拷贝条目表后立刻关闭只读句柄：fopen_s 打开的文件不可共享写入，写阶段要用 r+b 重开
+    const std::vector<Entry> entries = reader.Entries();
+    reader.Close();
+    entryCount = (uint32_t)entries.size();
+
+    // 定位同名条目（忽略大小写；替换时保留原路径字节，树/路径表无需变动）
+    const std::string key = ToLowerAscii(pathUtf8);
+    int hit = -1;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        if (ToLowerAscii(entries[i].pathUtf8) == key) {
+            hit = (int)i;
+            break;
+        }
+    }
+    replaced = hit >= 0;
+
+    // 编码新流（自适应压缩）
+    const uint8_t flags = (uint8_t)((compress ? 0x01 : 0x00) | (encrypt ? 0x02 : 0x00));
+    std::vector<uint8_t> stream;
+    std::string eerr;
+    if (!WhscEncode(data, flags, stream, eerr, level, compress)) {
+        err = "编码失败: " + eerr;
+        return false;
+    }
+    const uint32_t newBlocks = BlocksFor(stream.size());
+
+    // 块分配：优先原链前缀；不足取空闲块（原包历史残留），再不足向文件尾扩展
+    uint32_t totalBlocks = layout.totalBlocks;
+    size_t freeIdx = 0;
+    auto allocBlock = [&]() -> uint32_t {
+        if (freeIdx < layout.freeBlocks.size()) return layout.freeBlocks[freeIdx++];
+        return totalBlocks++;
+    };
+
+    std::vector<uint32_t> entryChain;
+    if (hit >= 0) {
+        auto it = layout.byPath.find(key);
+        if (it != layout.byPath.end()) entryChain = it->second.chain;
+    }
+    if (newBlocks > entryChain.size()) {
+        while (entryChain.size() < newBlocks) entryChain.push_back(allocBlock());
+    } else {
+        entryChain.resize(newBlocks);  // 缩短：原链多出的块保留原字节（不可达）
+    }
+    const uint32_t rootBlock = entryChain.empty() ? 0 : entryChain[0];
+
+    // 目录树/路径表：替换时 rootBlock 不变 -> 树明文不变，完全不用重写；
+    // 新增条目时按原包顺序重建（新条目追加在末尾）
+    std::vector<uint8_t> treeStream, namesStream;
+    std::vector<uint32_t> treeChain, namesChain;
+    if (!replaced) {
+        std::map<std::string, const Entry*> byLower;
+        for (const Entry& e : entries) byLower[ToLowerAscii(e.pathUtf8)] = &e;
+        std::vector<PreparedForBuild> files;
+        files.reserve(entries.size() + 1);
+        for (const std::string& okey : layout.entryOrder) {
+            auto it = byLower.find(okey);
+            if (it == byLower.end()) continue;
+            PreparedForBuild f;
+            f.relPath = Utf8ToWide(it->second->pathUtf8);
+            f.rootBlock = it->second->rootBlock;
+            files.push_back(f);
+        }
+        PreparedForBuild f;
+        f.relPath = Utf8ToWide(pathUtf8);
+        f.rootBlock = rootBlock;
+        files.push_back(f);
+
+        std::vector<uint8_t> treeRaw, namesBlob;
+        BuildTreeAndNames(files, treeRaw, namesBlob);
+        if (!WhscEncode(treeRaw, flags, treeStream, eerr, level, compress) ||
+            !WhscEncode(namesBlob, flags, namesStream, eerr, level, compress)) {
+            err = "目录树编码失败: " + eerr;
+            return false;
+        }
+        // 链长必须精确等于流所需块数：读取端按 fileSize 提前停链，多出的块会造成尾块校验失败
+        treeChain = layout.treeBlocks;
+        const uint32_t treeNeed = BlocksFor(treeStream.size());
+        if (treeChain.size() > treeNeed) {
+            treeChain.resize(treeNeed);  // 缩短：原链多出的块保留原字节（不可达）
+        } else {
+            while (treeChain.size() < treeNeed) treeChain.push_back(allocBlock());
+        }
+        namesChain = layout.namesBlocks;
+        const uint32_t namesNeed = BlocksFor(namesStream.size());
+        if (namesChain.size() > namesNeed) {
+            namesChain.resize(namesNeed);
+        } else {
+            while (namesChain.size() < namesNeed) namesChain.push_back(allocBlock());
+        }
+        entryCount += 1;
+    }
+
+    if (progress && !progress(Utf8ToWide("写入 " + pathUtf8), 60)) {
+        err = "操作已取消";
+        return false;
+    }
+
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, pkgPath.c_str(), L"r+b") != 0 || fp == nullptr) {
+        err = "打开包失败（写入）：包文件正被其他程序占用，请关闭后重试";
+        return false;
+    }
+    bool ok = WriteChainToFile(fp, stream, entryChain);
+    if (ok && !replaced) {
+        ok = WriteChainToFile(fp, treeStream, treeChain) && WriteChainToFile(fp, namesStream, namesChain);
+    }
+    if (ok) {
+        // 头部总块数（可能已扩展）；treeRoot/namesRoot 沿用原链前缀不变
+        uint8_t hdr4[4];
+        WriteU32(hdr4, totalBlocks);
+        ok = _fseeki64(fp, 0x1C, SEEK_SET) == 0 && fwrite(hdr4, 1, 4, fp) == 4;
+    }
+    if (ok) {
+        // 文件长度补齐到 totalBlocks 块（扩展出的空隙由文件系统零填充）
+        _fseeki64(fp, 0, SEEK_END);
+        const __int64 want = (__int64)totalBlocks * kBlockSize;
+        if (_ftelli64(fp) < want) {
+            ok = _fseeki64(fp, want - 1, SEEK_SET) == 0 && fputc(0, fp) != EOF;
+        }
+    }
+    fclose(fp);
+    if (!ok) {
+        err = "写入包文件失败（包可能已损坏，请从备份恢复）";
+        return false;
+    }
+    totalBlocksOut = totalBlocks;
+    if (progress) progress(L"完成", 100);
+    return true;
 }
 
 }  // namespace dpk

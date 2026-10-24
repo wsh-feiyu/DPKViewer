@@ -69,6 +69,20 @@ std::string WideToUtf8(const std::wstring& s) {
     return out;
 }
 
+int DetectTextEncoding(const std::string& bytes) {
+    if (bytes.empty()) return 0;
+    if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB &&
+        (unsigned char)bytes[2] == 0xBF) {
+        return 3;  // UTF-8 BOM
+    }
+    if (IsValidUtf8(bytes)) {
+        const int need =
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.c_str(), (int)bytes.size(), nullptr, 0);
+        if (need > 0) return 1;  // UTF-8（无 BOM）
+    }
+    return 2;  // 非 UTF-8：按系统 ANSI 代码页解码（中文系统即 GBK）
+}
+
 std::wstring NameBytesToWide(const std::string& bytes) {
     if (bytes.empty()) return std::wstring();
     if (IsValidUtf8(bytes)) {

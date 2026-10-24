@@ -52,6 +52,12 @@
 #define IDC_DIFF_TEXT_B 1036
 #define IDC_DIFF_STATUS 1037
 #define IDC_CHK_FOLDER 1038
+
+// file viewer window controls
+#define IDC_VIEW_MODE 1039
+#define IDC_VIEW_CLOSE 1040
+#define IDC_VIEW_TEXT 1041
+#define IDC_VIEW_STATUS 1042
 #define IDC_CMP_SIZELIMIT 1031
 
 // menu commands
@@ -62,6 +68,9 @@
 #define ID_APP_COMPARE 32776
 #define ID_CTX_EXPORT_FILE 32777   // 右键菜单：导出单个文件条目
 #define ID_CTX_EXPORT_FOLDER 32778 // 右键菜单：导出文件夹（递归）
+#define ID_CTX_VIEW_FILE 32779     // 右键菜单：查看文件内容
+#define ID_CTX_IMPORT_FILE 32780   // 右键菜单：导入文件到所在目录
+#define ID_APP_HINT 32781          // 菜单栏右侧的备份提醒（禁用项，无命令）
 // ID_APP_ABOUT / ID_APP_EXIT are provided by MFC's afxres.h (0xE140 / 0xE141);
 // the definitions below are only a fallback when afxres.h is not included.
 #ifndef ID_APP_ABOUT
