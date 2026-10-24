@@ -160,11 +160,19 @@ int CliPack(const std::vector<std::wstring>& args, Reporter& out) {
         } else if (a == L"/noencrypt") {
             opt.encrypt = false;
         } else if (a == L"/template" && i + 1 < args.size()) {
+            const std::wstring tpl = args[++i];
             std::string terr;
-            if (!dpk::LoadTemplateHeader(args[++i], opt.templateHeader, terr)) {
+            if (!dpk::LoadTemplateHeader(tpl, opt.templateHeader, terr)) {
                 out.Line("FAIL 读取模板包头失败: " + terr);
                 return 1;
             }
+            // 同时载入原包布局：沿用原包块号回填，保证总块数与结构一致
+            auto layout = std::make_shared<dpk::PackLayout>();
+            if (!dpk::LoadPackLayout(tpl, *layout, terr)) {
+                out.Line("FAIL 读取模板布局失败: " + terr);
+                return 1;
+            }
+            opt.layout = layout;
         } else {
             out.Line("FAIL 无法识别的选项: " + dpk::WideToUtf8(args[i]));
             return 1;
