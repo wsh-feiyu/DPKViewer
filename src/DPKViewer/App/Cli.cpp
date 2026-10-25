@@ -293,7 +293,7 @@ int CliCompare(const std::vector<std::wstring>& args, Reporter& out) {
 }
 
 void CliUsage(const std::vector<std::wstring>& args, Reporter& out, bool showArgHint = true) {
-    out.Line("DPKViewer v0.1.4 - 寻仙 DPK 包工具（命令行模式）");
+    out.Line("DPKViewer v0.1.5 - 寻仙 DPK 包工具（命令行模式）");
     out.Line("用法:");
     out.Line("  DPKViewer.exe /list    <包>                        列出包内条目（根块/明文/存储/标志）");
     out.Line("  DPKViewer.exe /extract <包> <目录>                 解包全部条目到目录（逐条校验 MD5）");
