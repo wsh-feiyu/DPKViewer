@@ -134,10 +134,32 @@ def ico_bmp(rows):
     return header + bytes(pixels) + bytes(mask)
 
 
+def png_bytes(rows):
+    """RGBA PNG 字节（与 write_png 相同编码）。ICO 内大尺寸用 PNG 存储：
+    视觉无损，但比 32bpp BMP 小一个数量级（256px 约 270KB -> 20KB 上下）。"""
+    h = len(rows)
+    w = len(rows[0])
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)
+        for x in range(w):
+            r, g, b, a = rows[y][x]
+            raw += bytes((r, g, b, a))
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += chunk(b"IEND", b"")
+    return png
+
+
 def write_ico(path, sizes):
     images = []
     for s in sizes:
-        images.append((s, ico_bmp(render(s))))
+        rows = render(s)
+        images.append((s, png_bytes(rows) if s >= 128 else ico_bmp(rows)))
     out = bytearray()
     out += struct.pack("<HHH", 0, 1, len(images))
     offset = 6 + 16 * len(images)
