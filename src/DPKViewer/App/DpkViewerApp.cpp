@@ -28,12 +28,15 @@ BOOL CDPKViewerApp::InitInstance() {
     // Vista 风格的文件/文件夹对话框需要 COM
     ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    // 命令行模式（/list、/extract、/pack）在创建窗口前分流，不弹任何界面
+    // 命令行模式（/list、/extract、/pack、/compare、/help）在创建窗口前分流，不弹任何界面
     const int cli = app::RunCli(std::wstring(m_lpCmdLine));
     if (cli >= 0) {
         cliExit_ = cli;
         return FALSE;
     }
+
+    // 控制台子系统 + 双击/无参数启动：关掉系统自动分配的控制台窗口，只留 GUI
+    ::FreeConsole();
 
     if (!CWinApp::InitInstance()) {
         return FALSE;

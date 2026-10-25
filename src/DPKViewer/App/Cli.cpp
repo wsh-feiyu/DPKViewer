@@ -5,6 +5,7 @@
 //   DPKViewer.exe /extract <包> <目录>
 //   DPKViewer.exe /pack    <源目录> <输出包> [/level N] [/nocompress] [/noencrypt] [/template <包>]
 //   DPKViewer.exe /compare <包A> <包B> [/paths|/meta|/full] [/maxdiff <MB>]
+//   DPKViewer.exe /help | --help | help | /?    显示帮助
 // 附加:
 //   /log <文件>      同时把输出写入该文件（UTF-8 带 BOM）
 //   /quiet           不向控制台输出（/log 仍生效）
@@ -291,13 +292,21 @@ int CliCompare(const std::vector<std::wstring>& args, Reporter& out) {
     return (result.stats.different || result.stats.onlyA || result.stats.onlyB || result.stats.errors) ? 1 : 0;
 }
 
-void CliUsage(const std::vector<std::wstring>& args, Reporter& out) {
-    out.Line("用法: DPKViewer.exe /list    <包>");
-    out.Line("      DPKViewer.exe /extract <包> <目录>");
-    out.Line("      DPKViewer.exe /pack    <源目录> <输出包> [/level N] [/nocompress] [/noencrypt] [/template <包>]");
-    out.Line("      DPKViewer.exe /compare <包A> <包B> [/paths|/meta|/full] [/maxdiff <MB>]");
-    out.Line("      /log <文件>  /quiet");
-    out.Line("参数 " + std::to_string(args.size()) + " 个，缺少必要的包路径");
+void CliUsage(const std::vector<std::wstring>& args, Reporter& out, bool showArgHint = true) {
+    out.Line("DPKViewer v0.1.4 - 寻仙 DPK 包工具（命令行模式）");
+    out.Line("用法:");
+    out.Line("  DPKViewer.exe /list    <包>                        列出包内条目（根块/明文/存储/标志）");
+    out.Line("  DPKViewer.exe /extract <包> <目录>                 解包全部条目到目录（逐条校验 MD5）");
+    out.Line("  DPKViewer.exe /pack    <源目录> <输出包>           打包目录为 DPK 包");
+    out.Line("      选项: /level N(1-9) /nocompress /noencrypt /template <包>(沿用原包布局,未变条目原样复用)");
+    out.Line("  DPKViewer.exe /compare <包A> <包B>                 对比两个包");
+    out.Line("      选项: /paths|/meta|/full(对比深度) /maxdiff <MB>(大小差异上限,超出停止)");
+    out.Line("  DPKViewer.exe /help | --help | help | /?           显示本帮助");
+    out.Line("  通用选项: /log <文件>(同时写日志,UTF-8) /quiet(不写控制台)");
+    out.Line("  退出码: 0 成功(对比时=无差异) / 1 失败或有差异");
+    if (showArgHint) {
+        out.Line("参数 " + std::to_string(args.size()) + " 个，缺少必要的包路径");
+    }
 }
 
 }  // namespace
@@ -311,7 +320,8 @@ int RunCli(const std::wstring& cmdLine) {
     for (size_t i = 0; i < all.size(); ++i) {
         const std::wstring a = Lower(all[i]);
         if (a == L"/list" || a == L"/extract" || a == L"/pack" || a == L"-list" || a == L"-extract" || a == L"-pack" ||
-            a == L"/compare" || a == L"-compare" || a == L"/?" || a == L"/help" || a == L"-h") {
+            a == L"/compare" || a == L"-compare" || a == L"/?" || a == L"-?" || a == L"--?" || a == L"/help" ||
+            a == L"-h" || a == L"--help" || a == L"help") {
             command = a;
         } else if (a == L"/log" && i + 1 < all.size()) {
             logPath = all[++i];
@@ -329,12 +339,14 @@ int RunCli(const std::wstring& cmdLine) {
     if (quiet) {
         FILE* f = nullptr;
         freopen_s(&f, "NUL", "w", stdout);
+        SetConsoleOutputEnabled(false);
     }
     Reporter out(logPath);
 
-    if (command == L"/?" || command == L"/help" || command == L"-h") {
+    if (command == L"/?" || command == L"-?" || command == L"--?" || command == L"/help" || command == L"-h" ||
+        command == L"--help" || command == L"help") {
         std::vector<std::wstring> dummy;
-        CliUsage(dummy, out);
+        CliUsage(dummy, out, false);
         return 0;
     }
     if (command == L"/list" || command == L"-list") {

@@ -11,6 +11,9 @@ namespace app {
 // 命令行模式下把当前进程的输出接回父控制台（GUI 子系统的 exe 默认没有控制台）
 void AttachParentConsole();
 
+// /quiet 时关闭控制台输出（日志仍写）
+void SetConsoleOutputEnabled(bool enabled);
+
 // 选择文件夹（Vista 风格 IFileOpenDialog，FOS_PICKFOLDERS）
 bool PickFolder(HWND owner, const wchar_t* title, std::wstring& out);
 
