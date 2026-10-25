@@ -81,9 +81,8 @@ BEGIN_MESSAGE_MAP(CDiffViewer, CFrameWnd)
     ON_WM_GETMINMAXINFO()
     ON_WM_CLOSE()
     ON_CBN_SELCHANGE(IDC_DIFF_MODE, &CDiffViewer::OnModeChanged)
+    ON_BN_CLICKED(IDC_DIFF_HIDESAME, &CDiffViewer::OnHideSameChanged)
     ON_BN_CLICKED(IDC_DIFF_CLOSE, &CDiffViewer::OnClose)
-    ON_EN_VSCROLL(IDC_DIFF_TEXT_A, &CDiffViewer::OnScrollA)
-    ON_EN_VSCROLL(IDC_DIFF_TEXT_B, &CDiffViewer::OnScrollB)
 END_MESSAGE_MAP()
 
 CDiffViewer::CDiffViewer() {}
@@ -105,13 +104,13 @@ int CDiffViewer::OnCreate(LPCREATESTRUCT lpCreateStruct) {
 
     if (!AfxInitRichEdit2()) return -1;
 
-    m_lblPath.Create(L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_PATHELIPSIS, CRect(0, 0, 10, 10),
-                     this, IDC_DIFF_PATH);
     m_lblMode.Create(L"模式:", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE, CRect(0, 0, 10, 10), this, (UINT)-1);
     m_cmbMode.Create(WS_CHILD | WS_VISIBLE | WS_BORDER | CBS_DROPDOWNLIST | WS_VSCROLL, CRect(0, 0, 10, 10), this,
                      IDC_DIFF_MODE);
     m_cmbMode.AddString(L"文本对比");
     m_cmbMode.AddString(L"十六进制对比");
+    m_chkHideSame.Create(L"隐藏相同行(&H)", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, CRect(0, 0, 10, 10), this,
+                         IDC_DIFF_HIDESAME);
     m_btnClose.Create(L"关闭(&X)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, CRect(0, 0, 10, 10), this, IDC_DIFF_CLOSE);
 
     const DWORD paneStyle = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_READONLY |
@@ -120,6 +119,9 @@ int CDiffViewer::OnCreate(LPCREATESTRUCT lpCreateStruct) {
     m_txtB.Create(paneStyle, CRect(0, 0, 10, 10), this, IDC_DIFF_TEXT_B);
     m_txtA.LimitText(0x4000000);
     m_txtB.LimitText(0x4000000);
+    // 子类化两个富文本：拦截滚动消息做像素级双侧同步（EN_VSCROLL 对滚轮不可靠）
+    ::SetWindowSubclass(m_txtA.GetSafeHwnd(), PaneProc, 1, (DWORD_PTR)this);
+    ::SetWindowSubclass(m_txtB.GetSafeHwnd(), PaneProc, 2, (DWORD_PTR)this);
 
     m_status.Create(L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_CENTERIMAGE | SS_SUNKEN, CRect(0, 0, 10, 10), this,
                     IDC_DIFF_STATUS);
@@ -132,7 +134,7 @@ int CDiffViewer::OnCreate(LPCREATESTRUCT lpCreateStruct) {
                               CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
     }
     HWND all[] = {
-        m_lblPath.GetSafeHwnd(), m_lblMode.GetSafeHwnd(), m_cmbMode.GetSafeHwnd(), m_btnClose.GetSafeHwnd(),
+        m_lblMode.GetSafeHwnd(), m_cmbMode.GetSafeHwnd(), m_chkHideSame.GetSafeHwnd(), m_btnClose.GetSafeHwnd(),
         m_txtA.GetSafeHwnd(),    m_txtB.GetSafeHwnd(),    m_status.GetSafeHwnd(),
     };
     for (HWND h : all) {
@@ -194,20 +196,18 @@ void CDiffViewer::Layout() {
     const int right = rc.Width() - kMargin;
 
     const int row1 = kMargin;
-    const int row2 = row1 + kRowH + kRowGap;
-
-    m_lblPath.MoveWindow(kMargin, row1, right - kMargin, kRowH);
 
     const int lblModeW = 40;
     const int cmbW = 150;
-    m_lblMode.MoveWindow(kMargin, row2, lblModeW, kRowH);
-    m_cmbMode.MoveWindow(kMargin + lblModeW, row2, cmbW, 200);
-    m_btnClose.MoveWindow(right - 74, row2, 74, kRowH);
+    m_lblMode.MoveWindow(kMargin, row1, lblModeW, kRowH);
+    m_cmbMode.MoveWindow(kMargin + lblModeW, row1, cmbW, 200);
+    m_chkHideSame.MoveWindow(kMargin + lblModeW + cmbW + kRowGap, row1, 116, kRowH);
+    m_btnClose.MoveWindow(right - 74, row1, 74, kRowH);
 
     const int statusTop = rc.Height() - kStatusH;
     m_status.MoveWindow(kMargin, statusTop, right - kMargin, kStatusH);
 
-    const int paneTop = row2 + kRowH + kRowGap;
+    const int paneTop = row1 + kRowH + kRowGap;
     int paneH = statusTop - paneTop - kRowGap;
     if (paneH < 80) paneH = 80;
     const int gap = 6;
@@ -239,27 +239,82 @@ void CDiffViewer::BuildDiff() {
 }
 
 // 追加带背景色的文本段；相邻同色段合并为一次 ReplaceSel，避免逐行调用卡顿
+// 追加带背景色的文本段——一次性生成 RTF 流输入。
+// 之前用逐段 SetSelectionCharFormat+ReplaceSel，段数多时富文本反复重排版（平方级），
+// 大文本（50KB+）要卡几秒；RTF 单遍载入基本瞬间完成。
 void CDiffViewer::AppendRuns(CRichEditCtrl& re, const std::vector<std::pair<std::wstring, COLORREF>>& items) {
-    re.SetRedraw(FALSE);
+    static const struct {
+        COLORREF c;
+        int hl;
+    } kMap[] = {
+        {kBgDiff, 1}, {kBgDel, 2}, {kBgIns, 3}, {kBgNote, 4}, {kBgGap, 5}, {kBgDeep, 6},
+    };
+    auto hlOf = [](COLORREF c) -> int {
+        for (const auto& m : kMap) {
+            if (m.c == c) return m.hl;
+        }
+        return 0;  // 默认背景
+    };
+    // RTF 转义：ASCII 直出，控制字转义，非 ASCII 用 \uN?（16 位有符号）
+    auto escape = [](const std::wstring& s, std::string& out) {
+        char buf[24];
+        for (const wchar_t c : s) {
+            if (c == L'\\' || c == L'{' || c == L'}') {
+                out += '\\';
+                out += (char)c;
+            } else if (c == L'\r') {
+                continue;
+            } else if (c == L'\n') {
+                out += "\\par ";
+            } else if (c < 128) {
+                out += (char)c;
+            } else {
+                sprintf_s(buf, "\\u%d?", (short)c);
+                out += buf;
+            }
+        }
+    };
+
+    std::string rtf =
+        "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fmodern Consolas;}}\\fs18"
+        "{\\colortbl;\\red255\\green235\\blue156;\\red255\\green205\\blue205;\\red205\\green245\\blue205;"
+        "\\red226\\green239\\blue255;\\red242\\green242\\blue242;\\red255\\green168\\blue112;}";
+    char hl[24];
     size_t i = 0;
     while (i < items.size()) {
         size_t j = i;
         while (j < items.size() && items[j].second == items[i].second) ++j;
-        std::wstring joined;
-        for (size_t k = i; k < j; ++k) joined += items[k].first;
-        CHARRANGE cr;
-        cr.cpMin = -1;
-        cr.cpMax = -1;
-        re.SetSel(cr);
-        CHARFORMAT2 cf;
-        memset(&cf, 0, sizeof(cf));
-        cf.cbSize = sizeof(cf);
-        cf.dwMask = CFM_BACKCOLOR;
-        cf.crBackColor = items[i].second == kDiffBgSame ? ::GetSysColor(COLOR_WINDOW) : items[i].second;
-        re.SetSelectionCharFormat(cf);
-        re.ReplaceSel(CString(joined.c_str()));
+        const int h = hlOf(items[i].second);
+        if (h != 0) {
+            sprintf_s(hl, "\\highlight%d ", h);
+            rtf += hl;
+        }
+        for (size_t k = i; k < j; ++k) escape(items[k].first, rtf);
+        if (h != 0) rtf += "\\highlight0 ";
         i = j;
     }
+    rtf += "}";
+
+    struct StreamCtx {
+        const char* p;
+        size_t left;
+    } ctx = {rtf.data(), rtf.size()};
+    auto cb = [](DWORD_PTR cookie, LPBYTE buf, LONG count, LONG* done) -> DWORD CALLBACK {
+        StreamCtx* c = reinterpret_cast<StreamCtx*>(cookie);
+        const LONG n = c->left < (size_t)count ? (LONG)c->left : count;
+        if (n > 0) memcpy(buf, c->p, (size_t)n);
+        c->p += n;
+        c->left -= (size_t)n;
+        *done = n;
+        return 0;
+    };
+    EDITSTREAM es;
+    es.dwCookie = (DWORD_PTR)&ctx;
+    es.dwError = 0;
+    es.pfnCallback = cb;
+    re.SetRedraw(FALSE);
+    re.StreamIn(SF_RTF, es);
+    re.SetSel(0, 0);  // 回到顶部
     re.SetRedraw(TRUE);
 }
 
@@ -302,20 +357,32 @@ void CDiffViewer::BuildTextDiff() {
         }
     }
 
-    for (const dpk::TextDiffRow& r : rows) {
+    // 行号前缀（等宽字体下右对齐 5 位）与留白
+    auto lineNo = [](int n) {
+        wchar_t buf[16];
+        swprintf_s(buf, 16, L"%5d ", n);
+        return std::wstring(buf);
+    };
+    auto lineGap = []() { return std::wstring(L"      "); };
+
+    const bool hideSame = m_chkHideSame.GetSafeHwnd() != nullptr && m_chkHideSame.GetCheck() == BST_CHECKED;
+
+    // 发射一行（带行号；部分修改行内部用橙色标出差异片段）
+    auto emitRow = [&](const dpk::TextDiffRow& r) {
         const bool hasA = r.aIdx >= 0;
         const bool hasB = r.bIdx >= 0;
+        const std::wstring nA = hasA ? lineNo(r.aIdx + 1) : lineGap();
+        const std::wstring nB = hasB ? lineNo(r.bIdx + 1) : lineGap();
         if (r.kind == 1 && hasA && hasB) {
-            // 部分修改的行：公共前后缀之外的差异片段用橙色标出
             const std::wstring& sa = la[(size_t)r.aIdx];
             const std::wstring& sb = lb[(size_t)r.bIdx];
             const size_t p = dpk::TextCommonPrefix(sa, sb);
             const size_t s = dpk::TextCommonSuffix(sa, sb, std::min(sa.size(), sb.size()) - p);
-            itemsA.emplace_back(sa.substr(0, p), kBgDiff);
+            itemsA.emplace_back(nA + sa.substr(0, p), kBgDiff);
             if (sa.size() > p + s) itemsA.emplace_back(sa.substr(p, sa.size() - p - s), kBgDeep);
             itemsA.emplace_back(sa.substr(sa.size() - s), kBgDiff);
             itemsA.emplace_back(L"\r\n", kDiffBgSame);
-            itemsB.emplace_back(sb.substr(0, p), kBgDiff);
+            itemsB.emplace_back(nB + sb.substr(0, p), kBgDiff);
             if (sb.size() > p + s) itemsB.emplace_back(sb.substr(p, sb.size() - p - s), kBgDeep);
             itemsB.emplace_back(sb.substr(sb.size() - s), kBgDiff);
             itemsB.emplace_back(L"\r\n", kDiffBgSame);
@@ -329,11 +396,35 @@ void CDiffViewer::BuildTextDiff() {
                 bgB = kBgIns;
                 bgA = kBgGap;
             }
-            itemsA.emplace_back(hasA ? la[(size_t)r.aIdx] : std::wstring(L"·"), bgA);
-            itemsB.emplace_back(hasB ? lb[(size_t)r.bIdx] : std::wstring(L"·"), bgB);
+            itemsA.emplace_back(nA + (hasA ? la[(size_t)r.aIdx] : std::wstring(L"·")), bgA);
+            itemsB.emplace_back(nB + (hasB ? lb[(size_t)r.bIdx] : std::wstring(L"·")), bgB);
             itemsA.emplace_back(L"\r\n", kDiffBgSame);
             itemsB.emplace_back(L"\r\n", kDiffBgSame);
         }
+    };
+
+    // 连续相同行（>=3 行）在勾选「隐藏相同行」时折叠为一行占位提示
+    size_t ri = 0;
+    while (ri < rows.size()) {
+        if (rows[ri].kind == 0 && hideSame) {
+            size_t rj = ri;
+            while (rj < rows.size() && rows[rj].kind == 0) ++rj;
+            if (rj - ri >= 3) {
+                wchar_t buf[128];
+                swprintf_s(buf, 128, L"----- 行 A%d-%d / B%d-%d 相同（共 %zu 行，已折叠） -----",
+                           rows[ri].aIdx + 1, rows[rj - 1].aIdx + 1, rows[ri].bIdx + 1, rows[rj - 1].bIdx + 1,
+                           rj - ri);
+                const std::wstring ph(buf);
+                itemsA.emplace_back(ph, kBgNote);
+                itemsA.emplace_back(L"\r\n", kDiffBgSame);
+                itemsB.emplace_back(ph, kBgNote);
+                itemsB.emplace_back(L"\r\n", kDiffBgSame);
+                ri = rj;
+                continue;
+            }
+        }
+        emitRow(rows[ri]);
+        ++ri;
     }
     if (capped) {
         CString note;
@@ -435,18 +526,37 @@ void CDiffViewer::PostNcDestroy() {
     delete this;
 }
 
-void CDiffViewer::OnScrollA() {
-    SyncVertScroll(m_txtA, m_txtB);
+void CDiffViewer::OnHideSameChanged() {
+    if (m_txtA.GetSafeHwnd() == nullptr) return;
+    BuildDiff();
 }
 
-void CDiffViewer::OnScrollB() {
-    SyncVertScroll(m_txtB, m_txtA);
+// 子类过程：消息走完默认处理后，若是滚动类消息则同步另一侧。
+// 我们自己发出的 EM_SETSCROLLPOS 会被 m_syncing 拦截，不会往复读位。
+LRESULT CALLBACK CDiffViewer::PaneProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id,
+                                       DWORD_PTR refData) {
+    const LRESULT result = ::DefSubclassProc(hWnd, msg, wParam, lParam);
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E
+#endif
+    if (msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL ||
+        msg == WM_KEYDOWN) {
+        CDiffViewer* self = reinterpret_cast<CDiffViewer*>(refData);
+        if (self != nullptr && !self->m_syncing) self->SyncFrom((int)id);
+    }
+    return result;
 }
 
-void CDiffViewer::SyncVertScroll(CRichEditCtrl& from, CRichEditCtrl& to) {
-    if (m_syncing) return;
+void CDiffViewer::SyncFrom(int paneId) {
+    CRichEditCtrl& from = paneId == 1 ? m_txtA : m_txtB;
+    CRichEditCtrl& to = paneId == 1 ? m_txtB : m_txtA;
+    POINT pf = {0, 0}, pt = {0, 0};
+    from.SendMessage(EM_GETSCROLLPOS, 0, (LPARAM)&pf);
+    to.SendMessage(EM_GETSCROLLPOS, 0, (LPARAM)&pt);
+    if (pt.y == pf.y && pt.x == pf.x) return;  // 已同步（也防止往复触发）
     m_syncing = true;
-    const int pos = from.GetScrollPos(SB_VERT);
-    to.SendMessage(WM_VSCROLL, MAKEWPARAM(SB_THUMBPOSITION, (WORD)pos), 0);
+    pt.x = pf.x;  // 水平/垂直都同步
+    pt.y = pf.y;
+    to.SendMessage(EM_SETSCROLLPOS, 0, (LPARAM)&pt);
     m_syncing = false;
 }

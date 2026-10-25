@@ -1045,7 +1045,7 @@ void CMainFrame::OnUsage() {
 
 void CMainFrame::OnAbout() {
     CString text;
-    text += L"DPKViewer v0.1.3\r\n";
+    text += L"DPKViewer v0.1.4\r\n";
     text += L"MFC（静态链接）实现的 DPK 包工具：浏览、解包、生成。\r\n\r\n";
     text += L"包格式：whpackage1.0（块大小 1024，包口令 tianxiawudi，内容口令 gandiaosifu）\r\n";
     text += L"流格式：whsc1.0（flags 位 0x01 压缩 / 0x02 加密 / 0x04 内容口令）\r\n";

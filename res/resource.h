@@ -58,6 +58,7 @@
 #define IDC_VIEW_CLOSE 1040
 #define IDC_VIEW_TEXT 1041
 #define IDC_VIEW_STATUS 1042
+#define IDC_DIFF_HIDESAME 1043
 #define IDC_CMP_SIZELIMIT 1031
 
 // menu commands

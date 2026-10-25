@@ -25,9 +25,8 @@ protected:
     afx_msg void OnSize(UINT nType, int cx, int cy);
     afx_msg void OnGetMinMaxInfo(MINMAXINFO* lpMMI);
     afx_msg void OnModeChanged();
+    afx_msg void OnHideSameChanged();
     afx_msg void OnClose();
-    afx_msg void OnScrollA();
-    afx_msg void OnScrollB();
     virtual void PostNcDestroy();
     DECLARE_MESSAGE_MAP()
 
@@ -37,12 +36,15 @@ private:
     void BuildTextDiff();
     void BuildHexDiff();
     void AppendRuns(CRichEditCtrl& re, const std::vector<std::pair<std::wstring, COLORREF>>& items);
-    void SyncVertScroll(CRichEditCtrl& from, CRichEditCtrl& to);
+    // 富文本滚动消息子类过程：任何一侧滚动（滚动条/滚轮/键盘）后立刻像素级同步另一侧
+    static LRESULT CALLBACK PaneProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id,
+                                     DWORD_PTR refData);
+    void SyncFrom(int paneId);
     void SetStatus(const CString& text);
 
-    CStatic m_lblPath;
     CStatic m_lblMode;
     CComboBox m_cmbMode;
+    CButton m_chkHideSame;
     CButton m_btnClose;
     CRichEditCtrl m_txtA;
     CRichEditCtrl m_txtB;
